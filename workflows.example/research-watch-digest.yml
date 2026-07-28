@@ -1,7 +1,13 @@
-name: Research Watch — daily
+name: Research Watch — digest
 
 on:
   schedule:
+    # Pick ONE and set schedule.cadence in profile.yaml to match.
+    #
+    #   daily     "47 15 * * *"
+    #   weekly    "47 15 * * 1"    Mondays
+    #   monthly   "47 15 1 * *"    the 1st
+    #
     # 15:47 UTC. Off-the-hour deliberately: every user who asks for "9am"
     # gets minute 0, so the scheduler is busiest there and drifts most.
     # GitHub cron is UTC-only, so this is 08:47 PT in summer and 07:47 in
@@ -14,10 +20,10 @@ on:
         type: boolean
         default: false
       mode:
-        description: "daily = normal run; baseline = mark all as seen, no cost"
+        description: "digest = normal run; baseline = mark all as seen, no cost"
         type: choice
-        options: [daily, baseline]
-        default: daily
+        options: [digest, baseline]
+        default: digest
 
 permissions:
   contents: write        # to commit the archive and state file back
@@ -31,7 +37,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Check out ehk-os
+      # Your repo — where the archive, guides and state get committed.
+      - name: Check out this repo
         uses: actions/checkout@v4
 
       - name: Check out the research-watcher tool
@@ -39,9 +46,6 @@ jobs:
         with:
           repository: emilyhoughkovacs/research-watcher
           path: .tool
-          # Needed only while research-watcher is PRIVATE. Once it is public,
-          # delete this line and the RESEARCH_WATCHER_TOKEN secret.
-          token: ${{ secrets.RESEARCH_WATCHER_TOKEN || github.token }}
 
       - uses: actions/setup-python@v5
         with:
@@ -56,24 +60,27 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        # profile.yaml must be COMMITTED to this repo for CI to read it.
+        # It holds no secrets; those are the three above.
         run: |
           research-watch \
             --sources .tool/sources.yaml \
-            --profile research/watch-profile.yaml \
+            --profile profile.yaml \
             --base-dir . \
             --env /nonexistent \
-            ${{ github.event.inputs.mode || 'daily' }} \
+            ${{ github.event.inputs.mode || 'digest' }} \
             ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}
 
       - name: Commit archive and state
         run: |
           git config user.name  "research-watcher"
           git config user.email "actions@github.com"
-          git add research/watch research/.watch-state.json research/repro-guides 2>/dev/null || true
+          # Match these to the output: block in your profile.yaml.
+          git add out 2>/dev/null || true
           if git diff --staged --quiet; then
             echo "nothing new to commit"
           else
-            git commit -m "research-watch: daily $(date -u +%Y-%m-%d)"
+            git commit -m "research-watch: digest $(date -u +%Y-%m-%d)"
             # Another run may have landed while this one worked.
             git pull --rebase --autostash origin main
             git push

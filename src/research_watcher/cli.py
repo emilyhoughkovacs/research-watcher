@@ -3,8 +3,14 @@
   research-watch check      parse all sources, print a table. No LLM, no email.
   research-watch baseline   mark everything currently published as seen.
                             No LLM, no email, no cost. Run this ONCE first.
-  research-watch daily      summarize new items, archive, send the digest.
-  research-watch weekly     grade the week, pick one, write the guide, send.
+  research-watch digest     summarize new items, archive, send the digest.
+  research-watch pick       grade the window, pick one, write the guide, send.
+
+`digest` runs at whatever cadence you schedule it — daily, weekly, or
+monthly. The mechanics are identical either way (poll, diff against state,
+summarize what's new); cadence only changes how much a single run picks up,
+which is why it adjusts the sanity cap and how many items get expanded.
+`daily` and `weekly` remain as aliases for `digest` and `pick`.
 
 `baseline` exists because the first run finds every item every source has
 ever published (242 at time of writing). Summarizing that would cost ~$50
@@ -25,15 +31,25 @@ from anthropic import Anthropic
 from dotenv import load_dotenv
 
 from . import email as mailer
-from . import friday, summarize
+from . import pick as pick_mod
+from . import summarize
 from .fetch import fetch_all, new_items
 from .state import State
 
 log = logging.getLogger("research_watcher")
 
-# If a daily run suddenly sees more new items than this, something broke
-# (a parser change, a reset state file) — refuse rather than spend.
-DAILY_SANITY_CAP = 25
+# A run that sees more new items than this has almost certainly broken
+# (a parser change, a reset state file) — refuse rather than spend. The
+# threshold has to scale with the window: 25 new items in a day means
+# something is wrong; 25 in a month is a normal month.
+SANITY_CAP = {"daily": 25, "weekly": 60, "monthly": 150}
+
+# How many items get the expanded treatment when the profile doesn't say.
+# A monthly digest with 3 expanded items and 40 headlines isn't a digest.
+DEFAULT_TOP_N = {"daily": 3, "weekly": 5, "monthly": 8}
+
+CADENCES = ("daily", "weekly", "monthly")
+WINDOW = {"daily": "day", "weekly": "week", "monthly": "month"}
 
 # Self-contained defaults: a fresh clone writes only inside itself, and
 # out/ is gitignored. Override in profile.yaml → output: to write into a
@@ -69,6 +85,23 @@ def _setup(args) -> tuple[dict, State, Path]:
     # a notes repo instead.
     state = State(base / out.get("state_file", DEFAULT_STATE))
     return profile, state, base
+
+
+def _cadence(args, profile: dict) -> str:
+    """CLI flag wins over profile, profile over the daily default."""
+    value = (
+        getattr(args, "cadence", None)
+        or profile.get("schedule", {}).get("cadence")
+        or "daily"
+    )
+    value = str(value).lower()
+    if value not in CADENCES:
+        sys.exit(
+            f"error: unknown cadence {value!r}.\n"
+            f"  Expected one of: {', '.join(CADENCES)}\n"
+            "  Set it in profile.yaml under schedule.cadence, or pass --cadence."
+        )
+    return value
 
 
 def _require(name: str) -> str:
@@ -129,14 +162,20 @@ def cmd_baseline(args) -> int:
     return 0
 
 
-def cmd_daily(args) -> int:
+def cmd_digest(args) -> int:
     profile, state, base = _setup(args)
+    cadence = _cadence(args, profile)
     api_key = _require("ANTHROPIC_API_KEY")
     address = _require("GMAIL_ADDRESS")
     app_pw = _require("GMAIL_APP_PASSWORD")
 
     out = profile.get("output", {})
     archive_dir = base / out.get("archive_dir", DEFAULT_ARCHIVE)
+    email_cfg = profile.get("email", {})
+    # suppress_empty_daily was the pre-cadence name; still honoured.
+    suppress_empty = email_cfg.get(
+        "suppress_empty", email_cfg.get("suppress_empty_daily", True)
+    )
 
     results = fetch_all(args.sources, state=state)
     for r in results:
@@ -148,25 +187,30 @@ def cmd_daily(args) -> int:
     if not items:
         log.info("no new items")
         state.save()
-        if failing and not profile.get("email", {}).get("suppress_empty_daily", True):
-            pass
-        elif failing:
-            # Nothing new, but something is broken — that still warrants mail.
+        if failing:
+            # Nothing new, but something is broken — that still warrants mail,
+            # because "quiet" and "the scraper died" look identical from here.
             subject = f"⚠ [Research Watch] {len(failing)} source(s) failing"
             body = "No new items, but these sources have been failing:\n\n" + "\n".join(
                 f"  {sid}: {n} consecutive failures" for sid, n in failing
             )
             mailer.send(subject, body, address, app_pw)
+        elif not suppress_empty:
+            subject = f"[Research Watch] {cadence.capitalize()} digest — nothing new"
+            body = f"No new items across {len(results)} source(s).\n"
+            mailer.send(subject, body, address, app_pw)
         return 0
 
-    if len(items) > DAILY_SANITY_CAP and not args.force:
+    cap = profile.get("schedule", {}).get("sanity_cap") or SANITY_CAP[cadence]
+    if len(items) > cap and not args.force:
         state.save()
         sys.exit(
-            f"error: {len(items)} new items exceeds the sanity cap of {DAILY_SANITY_CAP}.\n"
+            f"error: {len(items)} new items exceeds the {cadence} sanity cap of {cap}.\n"
             "This usually means a parser changed or the state file was reset —\n"
-            "not that {len(items)} papers were published overnight.\n\n"
+            f"not that {len(items)} papers were published in one {WINDOW[cadence]}.\n\n"
             "  Establish a new waterline:  research-watch baseline\n"
-            "  Or override deliberately:   research-watch daily --force"
+            "  Raise the bar permanently:  schedule.sanity_cap in profile.yaml\n"
+            "  Or override just this run:  research-watch digest --force"
         )
 
     client = Anthropic(api_key=api_key)
@@ -185,28 +229,34 @@ def cmd_daily(args) -> int:
             item.key, item.title, item.published.isoformat() if item.published else None
         )
 
-    top_n = profile.get("email", {}).get("top_n", 3)
+    top_n = email_cfg.get("top_n") or DEFAULT_TOP_N[cadence]
     top, rest = summarize.rank(items, top_n)
-    subject, body = mailer.render_daily(
-        top, rest, results, str(archive_dir.relative_to(base)), failing
+    subject, body = mailer.render_digest(
+        top, rest, results, str(archive_dir.relative_to(base)), failing, cadence
     )
 
     if args.dry_run:
         print(f"SUBJECT: {subject}\n\n{body}")
-    else:
-        mailer.send(subject, body, address, app_pw)
+        # Deliberately no state.save(). A dry run that marked these seen would
+        # make the next real run find nothing and send no email — the preview
+        # would have eaten the digest it was previewing.
+        log.info("dry run — state not saved, these %d item(s) stay new", len(items))
+        return 0
 
+    mailer.send(subject, body, address, app_pw)
     state.save()
     return 0
 
 
-def cmd_weekly(args) -> int:
+def cmd_pick(args) -> int:
     profile, state, base = _setup(args)
 
-    # The Friday pick is optional. Checked before any credential lookup or
+    email_cfg = profile.get("email", {})
+    # The repro pick is optional. Checked before any credential lookup or
     # network call so that disabling it costs nothing and can't fail.
-    if not profile.get("email", {}).get("weekly_enabled", True):
-        log.info("weekly pick disabled in profile (email.weekly_enabled: false)")
+    # weekly_enabled was the pre-cadence name; still honoured.
+    if not email_cfg.get("pick_enabled", email_cfg.get("weekly_enabled", True)):
+        log.info("repro pick disabled in profile (email.pick_enabled: false)")
         return 0
 
     api_key = _require("ANTHROPIC_API_KEY")
@@ -217,14 +267,16 @@ def cmd_weekly(args) -> int:
     archive_dir = base / out.get("archive_dir", DEFAULT_ARCHIVE)
     guides_dir = base / out.get("guides_dir", DEFAULT_GUIDES)
 
-    items = _load_week(archive_dir, args.days)
+    items = _load_window(archive_dir, args.days)
     items = [i for i in items if not state.already_picked(i.key)]
 
     if not items:
-        subject, body = mailer.render_friday(None, None, None, [], str(guides_dir), 0)
+        subject, body = mailer.render_pick(
+            None, None, None, [], str(guides_dir), 0, days=args.days
+        )
         if args.dry_run:
             print(f"SUBJECT: {subject}\n\n{body}")
-        elif profile.get("email", {}).get("send_empty_weekly", True):
+        elif email_cfg.get("send_empty_pick", email_cfg.get("send_empty_weekly", True)):
             mailer.send(subject, body, address, app_pw)
         return 0
 
@@ -232,18 +284,22 @@ def cmd_weekly(args) -> int:
     session = requests.Session()
     session.headers.update({"User-Agent": "research-watcher/0.1"})
 
-    pick, escalation, _why, estimates = friday.score_shortlist(client, items, profile)
+    pick, escalation, _why, estimates = pick_mod.score_shortlist(client, items, profile)
 
     guide_path = None
     estimate_str = None
     if pick is not None:
         try:
-            guide = friday.generate_guide(client, pick, profile, session)
-            guide_path = friday.write_guide(pick, guide, profile, guides_dir)
+            guide = pick_mod.generate_guide(client, pick, profile, session)
+            guide_path = pick_mod.write_guide(pick, guide, profile, guides_dir)
             estimate_str = (
                 f"{guide['est_build_hours']}h build + {guide['est_writeup_hours']}h writeup"
             )
-            state.record_pick(pick.key, guide_path)
+            # The guide file is written either way — it's the thing you want to
+            # read in a dry run. Recording the pick is what must not happen,
+            # since that permanently excludes the paper from future runs.
+            if not args.dry_run:
+                state.record_pick(pick.key, guide_path)
         except Exception as exc:  # noqa: BLE001
             log.error("guide generation failed: %s", exc)
             guide_path = "(guide generation failed — see logs)"
@@ -251,21 +307,29 @@ def cmd_weekly(args) -> int:
     runners = [i for i in items if i is not pick and i is not escalation]
     runners.sort(key=lambda i: i.scores.get("composite") or 0, reverse=True)
 
-    subject, body = mailer.render_friday(
-        pick, guide_path, escalation, runners[:5], str(guides_dir), len(items), estimate_str
+    subject, body = mailer.render_pick(
+        pick,
+        guide_path,
+        escalation,
+        runners[:5],
+        str(guides_dir),
+        len(items),
+        estimate_str,
+        days=args.days,
     )
 
     if args.dry_run:
         print(f"SUBJECT: {subject}\n\n{body}")
-    else:
-        mailer.send(subject, body, address, app_pw)
+        log.info("dry run — state not saved, this pick stays eligible")
+        return 0
 
+    mailer.send(subject, body, address, app_pw)
     state.save()
     return 0
 
 
-def _load_week(archive_dir: Path, days: int):
-    """Rehydrate Items from the archive files written this week."""
+def _load_window(archive_dir: Path, days: int):
+    """Rehydrate Items from the archive files written inside the window."""
     from datetime import date, timedelta
 
     import yaml
@@ -331,15 +395,26 @@ def main(argv=None) -> int:
         "baseline", help="mark everything currently published as seen; no cost"
     ).set_defaults(func=cmd_baseline)
 
-    d = sub.add_parser("daily", help="summarize new items and send the digest")
+    # `daily` and `weekly` are the pre-cadence command names, kept as aliases
+    # so existing schedules and muscle memory keep working.
+    d = sub.add_parser(
+        "digest", aliases=["daily"], help="summarize new items and send the digest"
+    )
     d.add_argument("--dry-run", action="store_true", help="print the email instead of sending")
     d.add_argument("--force", action="store_true", help="bypass the sanity cap")
-    d.set_defaults(func=cmd_daily)
+    d.add_argument(
+        "--cadence",
+        choices=CADENCES,
+        help="overrides schedule.cadence in the profile (default: daily)",
+    )
+    d.set_defaults(func=cmd_digest)
 
-    w = sub.add_parser("weekly", help="grade the week, pick one, write the guide")
-    w.add_argument("--dry-run", action="store_true")
-    w.add_argument("--days", type=int, default=7)
-    w.set_defaults(func=cmd_weekly)
+    w = sub.add_parser(
+        "pick", aliases=["weekly"], help="grade the window, pick one paper, write the guide"
+    )
+    w.add_argument("--dry-run", action="store_true", help="print the email instead of sending")
+    w.add_argument("--days", type=int, default=7, help="archive window to grade")
+    w.set_defaults(func=cmd_pick)
 
     args = p.parse_args(argv)
     return args.func(args)

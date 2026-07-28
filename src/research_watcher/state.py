@@ -71,7 +71,7 @@ class State:
             if h.get("consecutive_failures", 0) >= threshold
         ]
 
-    # ── weekly picks ────────────────────────────────────────────────
+    # ── repro picks ────────────────────────────────────────────────
     def already_picked(self, key: str) -> bool:
         return any(p["key"] == key for p in self.data["picks"])
 

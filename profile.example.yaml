@@ -1,14 +1,31 @@
 # Copy to profile.yaml (gitignored) and edit.
 #
-# `identity`, `goal.areas` and `output` are all the daily digest needs.
-# `skill` and `constraints` only matter if you use the weekly pick; they
+# `identity`, `goal.areas` and `output` are all the digest needs.
+# `skill` and `constraints` only matter if you use the repro pick; they
 # calibrate feasibility, which asks "can this be run on THIS setup in the
 # stated budget", not "is this reproducible in principle".
+
+schedule:
+  # How often you intend to run `research-watch digest`: daily | weekly |
+  # monthly. This does NOT schedule anything — cron or GitHub Actions does
+  # that (see workflows.example/). Setting it here tells the tool how much
+  # ground one run covers, which sets the sanity cap, the default number of
+  # expanded items, and the subject line.
+  #
+  # Keep it matched to your actual cron. A `weekly` cadence fired daily
+  # still works, it just wastes a lenient cap.
+  cadence: daily
+
+  # Optional hard override of the cap on new items in a single run. Above
+  # it, the run aborts instead of spending tokens, on the theory that a
+  # sudden flood means a parser broke or state was reset.
+  # Defaults by cadence: daily 25, weekly 60, monthly 150.
+  # sanity_cap: 40
 
 identity:
   name: Your Name
   email: you@example.com
-  # Only used by the weekly pick's writeup outline. Leave as-is if unused.
+  # Only used by the repro pick's writeup outline. Leave as-is if unused.
   blog_repo: yourname/yourname.github.io
   blog_engine: jekyll              # jekyll | hugo | markdown
   blog_post_dir: _posts            # jekyll convention: YYYY-MM-DD-slug.md
@@ -16,14 +33,19 @@ identity:
 
 goal:
   # Drives which items get the expanded treatment in the digest, and gives
-  # the weekly pick a sense of what counts as on-topic. Free text.
+  # the repro pick a sense of what counts as on-topic. Free text.
   areas:
     - mechanistic interpretability
     - evaluations
     - AI control
 
-# ── everything below is only used by the weekly pick ────────────────
-# Delete it if you set email.weekly_enabled: false.
+# ── everything below is only used by the repro pick ─────────────────
+# Delete it if you set email.pick_enabled: false.
+#
+# The pick grades what the digest already archived, so schedule it no more
+# often than the digest and give it a --days window at least as long as the
+# gap between digest runs. A weekly pick over a monthly digest spends three
+# weeks grading an empty window.
 
 skill:
   # Prose, not parsed. Describe the setup honestly; the scoring is only as
@@ -55,8 +77,8 @@ threads:
     ref: "path/to/notes.md"
 
 constraints:
-  # Hard filter. A paper that can't be run in this budget can't win the
-  # weekly pick regardless of how good it is.
+  # Hard filter. A paper that can't be run in this budget can't be picked
+  # regardless of how good it is.
   repro_budget_days: 1
   # What you intend to have at the end. Shapes how the guide scopes the
   # work. "a working run" is a perfectly valid single entry.
@@ -82,23 +104,29 @@ output:
   state_file: out/state.json
 
 email:
-  # Suppress the daily email when nothing new was found.
-  suppress_empty_daily: true
-  top_n: 3                     # expanded treatment; rest get headlines
+  # Suppress the digest when a run finds nothing new. Failing sources are
+  # still reported either way — silence and a dead scraper look identical
+  # from the inbox otherwise.
+  suppress_empty: true
 
-  # The weekly pick is optional. Set false for the digest only.
-  weekly_enabled: true
+  # How many items get the expanded treatment; the rest get one-line
+  # headlines. Comment out to take the cadence default: 3 daily, 5 weekly,
+  # 8 monthly.
+  # top_n: 3
 
-  # Send the Friday email even on an empty week ("nothing cleared the bar"
-  # is itself information, and it's a two-line email). Ignored when
-  # weekly_enabled is false.
-  send_empty_weekly: true
+  # The repro pick is optional. Set false for the digest only.
+  pick_enabled: true
+
+  # Send the pick email even when nothing cleared the bar ("no pick" is
+  # itself information, and it's a two-line email). Ignored when
+  # pick_enabled is false.
+  send_empty_pick: true
 
 scoring:
   weights:
     signal: 0.35               # does this matter for AI safety
-    artifact_value: 0.35              # does replicating produce application signal
+    artifact_value: 0.35       # is there something worth producing
     feasibility: 0.30          # can YOU do it in repro_budget_days
-  # Hard gate: below this, a paper cannot be the weekly pick. It routes to
+  # Hard gate: below this, a paper cannot be picked. It routes to
   # the ⚡ escalation section instead. Raise it if picks keep overrunning.
   feasibility_gate: 6

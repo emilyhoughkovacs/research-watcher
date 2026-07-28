@@ -3,14 +3,14 @@
 Runs only on items `fetch` flagged as new, so a quiet day costs zero tokens.
 
 Two-stage scoring, deliberately split:
-  - HERE (daily): `signal` and `artifact_value`. Both are properties of the paper
-    and are cheap to judge while the text is already loaded.
-  - FRIDAY: `feasibility`, which needs deep profile context, plus the
+  - HERE (every digest run): `signal` and `artifact_value`. Both are
+    properties of the paper and are cheap to judge while the text is loaded.
+  - THE PICK: `feasibility`, which needs deep profile context, plus the
     composite and the repro tier.
 
 Repro *signals* are extracted here but not graded. Extracting them costs
 almost nothing while the paper is in context and would cost a full re-read
-on Friday. Grading them daily would burn tokens on papers never opened.
+later. Grading every item would burn tokens on papers never opened.
 """
 
 from __future__ import annotations
@@ -31,12 +31,12 @@ log = logging.getLogger(__name__)
 
 MODEL = "claude-opus-5"
 
-# Daily summarization is bounded extraction, not open-ended reasoning.
-# Friday guide generation runs at "high" — see friday.py.
-DAILY_EFFORT = "medium"
+# Digest summarization is bounded extraction, not open-ended reasoning.
+# Guide generation for the pick runs at "high" — see pick.py.
+SUMMARY_EFFORT = "medium"
 
 # ~10k tokens of body. Enough for methods + results on a long paper;
-# Friday re-reads the winner in full when it writes the guide.
+# the pick stage re-reads the winner in full when it writes the guide.
 MAX_BODY_CHARS = 40_000
 
 _DATE_RE = re.compile(r"([A-Z][a-z]{2,8}\s+\d{1,2},\s+\d{4})")
@@ -128,7 +128,7 @@ def build_system_prompt(profile: dict) -> str:
 
     interests = ", ".join(goal.get("areas", [])) or "AI safety broadly"
     return f"""You are triaging new AI safety and interpretability publications \
-for a working researcher. Your output feeds a daily digest and a weekly \
+for a working researcher. Your output feeds a scheduled digest and a \
 "which of these is worth running" pick.
 
 ## Reader
@@ -246,7 +246,7 @@ def summarize_item(client: Anthropic, item: Item, system_prompt: str) -> None:
         ],
         thinking={"type": "adaptive"},
         output_config={
-            "effort": DAILY_EFFORT,
+            "effort": SUMMARY_EFFORT,
             "format": {"type": "json_schema", "schema": _SCHEMA},
         },
         messages=[{"role": "user", "content": user}],
@@ -328,9 +328,9 @@ def write_archive(item: Item, archive_dir) -> str:
 
 
 def rank(items: list[Item], top_n: int) -> tuple[list[Item], list[Item]]:
-    """Split into (expanded, headline-only) by daily score.
+    """Split into (expanded, headline-only) by digest score.
 
-    Daily rank uses signal + artifact_value; feasibility is a weekly concern.
+    Digest rank uses signal + artifact_value; feasibility belongs to the pick.
     """
 
     def score(i: Item) -> float:

@@ -25,12 +25,14 @@ links:
 **{{ item.source_display }}** · published {{ item.published or "date unknown" }} · picked {{ today }}
 
 {% set total = g.est_build_hours + g.est_writeup_hours %}
+{% set budget_days = profile.get("constraints", {}).get("repro_budget_days", 1) %}
+{% set budget_hours = budget_days * 8 %}
 > **Time budget:** {{ g.est_build_hours }}h build + {{ g.est_writeup_hours }}h writeup = **{{ total }}h**
-{% if total > 8 %}
+{% if total > budget_hours %}
 >
-> ⚠️ **This exceeds a one-day budget.** Either cut scope to the minimum viable
-> demo in §1 and skip the extensions, or move this to a weekend. Flagging it
-> rather than pretending it fits.
+> ⚠️ **This exceeds your {{ budget_days }}-day budget ({{ budget_hours }}h).** Either cut
+> scope to the minimum viable demo in §1 and skip the extensions, or split it
+> across sessions. Flagging it rather than pretending it fits.
 {% endif %}
 
 **Links:** [blog]({{ item.url }}){% if item.paper_url %} · [paper]({{ item.paper_url }}){% endif %}{% if item.code_url %} · [code]({{ item.code_url }}){% endif %}

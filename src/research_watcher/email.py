@@ -60,21 +60,26 @@ def _footer(results: list[SourceResult], archive_dir: str, failing: list[tuple[s
     return "\n".join(lines)
 
 
-# ── daily digest ────────────────────────────────────────────────────
+# ── digest ──────────────────────────────────────────────────────────
 
 
-def render_daily(
+def render_digest(
     top: list[Item],
     rest: list[Item],
     results: list[SourceResult],
     archive_dir: str,
     failing: list[tuple[str, int]],
+    cadence: str = "daily",
 ) -> tuple[str, str]:
     """Returns (subject, body)."""
     n = len(top) + len(rest)
     areas = sorted({i.area for i in top + rest})
     area_str = ", ".join(a.replace("-", " ").title() for a in areas[:3])
-    subject = f"[Research Watch] {n} new · {area_str}"
+    # Daily is the default and goes unlabelled — a subject that reads the same
+    # every day is easier to filter on. Anything rarer says so, because a
+    # monthly digest arriving unannounced looks like a backlog.
+    label = "" if cadence == "daily" else f"{cadence.capitalize()} · "
+    subject = f"[Research Watch] {label}{n} new · {area_str}"
     if failing:
         subject = f"⚠ {subject}"
 
@@ -113,24 +118,26 @@ def render_daily(
     return subject, "\n".join(lines)
 
 
-# ── friday pick ─────────────────────────────────────────────────────
+# ── repro pick ─────────────────────────────────────────────────────
 
 
-def render_friday(
+def render_pick(
     pick: Item | None,
     guide_path: str | None,
     escalation: Item | None,
     runners_up: list[Item],
     guides_dir: str,
-    week_count: int,
+    reviewed: int,
     estimate: str | None = None,
+    days: int = 7,
 ) -> tuple[str, str]:
     if pick is None:
-        subject = "[Research Watch] No pick this week"
+        subject = "[Research Watch] No pick — nothing cleared the bar"
         body = (
-            f"Nothing cleared the bar this week ({week_count} item(s) reviewed).\n\n"
+            f"Nothing cleared the bar in the last {days} days "
+            f"({reviewed} item(s) reviewed).\n\n"
             "Either nothing was reproducible inside your budget, or nothing scored\n"
-            "high enough on signal to be worth the day. This is a normal outcome —\n"
+            "high enough on signal to be worth the time. This is a normal outcome —\n"
             "no action needed.\n"
         )
         if runners_up:
@@ -139,7 +146,7 @@ def render_friday(
                 body += f"  • {i.title} — {_score_str(i)}\n"
         return subject, body
 
-    subject = f"[Research Watch] Paper of the week — {pick.title[:60]}"
+    subject = f"[Research Watch] Paper to reproduce — {pick.title[:60]}"
     tier_icon = {"GREEN": "🟢", "YELLOW": "🟡", "RED": "🔴"}.get(pick.repro_tier or "", "")
     sig = pick.repro_signals or {}
 
@@ -196,7 +203,7 @@ def render_friday(
         ]
 
     if runners_up:
-        lines += ["━━ ALSO THIS WEEK " + "━" * 39, ""]
+        lines += ["━━ ALSO REVIEWED " + "━" * 40, ""]
         for i in runners_up:
             icon = {"GREEN": "🟢", "YELLOW": "🟡", "RED": "🔴"}.get(i.repro_tier or "", "  ")
             tier = i.repro_tier or "not graded"

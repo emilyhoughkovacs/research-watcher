@@ -1,4 +1,4 @@
-"""Core data structures shared across fetch / summarize / friday stages."""
+"""Core data structures shared across fetch / summarize / pick stages."""
 
 from __future__ import annotations
 
@@ -8,10 +8,10 @@ from datetime import date
 
 @dataclass
 class Item:
-    """One publication, from first sighting through to weekly grading.
+    """One publication, from first sighting through to repro grading.
 
     Fields are populated in stages: `fetch` fills identity and links,
-    `summarize` fills bullets and repro_signals, `friday` fills scores
+    `summarize` fills bullets and repro_signals, `pick` fills scores
     and repro_tier. Anything not yet assigned stays None so a half-filled
     item is never mistaken for a fully graded one.
     """
@@ -34,7 +34,7 @@ class Item:
     bullets: list[str] = field(default_factory=list)
     repro_signals: dict = field(default_factory=dict)
 
-    # ── grading (friday) ────────────────────────────────────────────
+    # ── grading (pick) ────────────────────────────────────────────
     scores: dict = field(default_factory=lambda: {
         "signal": None,
         "artifact_value": None,
@@ -47,7 +47,9 @@ class Item:
     @property
     def slug(self) -> str:
         """Filesystem-safe slug derived from the stable id, not the title."""
-        tail = self.key.split(":", 1)[1]
+        # Keys are "source:path", but an archive file edited by hand may not
+        # be — fall back to the whole key rather than crashing on it.
+        tail = self.key.split(":", 1)[-1]
         cleaned = tail.strip("/").replace("/", "-").replace("index.html", "").strip("-")
         return cleaned or "untitled"
 

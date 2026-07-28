@@ -1,4 +1,7 @@
-"""Weekly stage: grade the shortlist, pick one, write a repro guide.
+"""Pick stage: grade the shortlist, choose one, write a repro guide.
+
+Runs over whatever window `--days` covers, on whatever schedule you set.
+Nothing here assumes a week.
 
 Two LLM calls:
   1. Feasibility scoring across the whole shortlist in one call, so the
@@ -29,11 +32,11 @@ from .summarize import MAX_BODY_CHARS, MODEL
 
 log = logging.getLogger(__name__)
 
-# The guide is the week's deliverable — worth the extra reasoning.
+# The guide is the deliverable — worth the extra reasoning.
 GUIDE_EFFORT = "high"
 SCORING_EFFORT = "medium"
 
-# Friday re-reads the winner in full; the daily cap doesn't apply.
+# The winner gets re-read in full; the digest's body cap doesn't apply.
 GUIDE_BODY_CHARS = MAX_BODY_CHARS * 3
 
 _SCORING_SCHEMA = {
@@ -94,8 +97,8 @@ def build_scoring_prompt(profile: dict) -> str:
     gate = profile.get("scoring", {}).get("feasibility_gate", 6)
     budget = cons.get("repro_budget_days", 1)
 
-    return f"""Pick the one paper from this week most worth actually running,
-given the reader's environment and a {budget}-day budget.
+    return f"""Pick the one paper from this shortlist most worth actually
+running, given the reader's environment and a {budget}-day budget.
 
 ## Environment
 
@@ -144,8 +147,8 @@ replication that does not finish.
 
 Feasibility must be >= {gate} to be picked. Below that, the paper CANNOT be
 the pick no matter how high its other scores. Set pick_key to null if
-nothing clears the gate. "Nothing this week is worth the day" is a
-legitimate and expected result, not a failure to find something.
+nothing clears the gate. "Nothing here is worth the time" is a legitimate
+and expected result, not a failure to find something.
 
 ## Escalation
 
@@ -205,7 +208,7 @@ def score_shortlist(
         messages=[
             {
                 "role": "user",
-                "content": "Candidates from this week:\n\n"
+                "content": "Candidates:\n\n"
                 + json.dumps(candidates, indent=2, default=str),
             }
         ],
@@ -222,7 +225,7 @@ def score_shortlist(
     estimates: dict[str, float] = {}
     weights = profile.get("scoring", {}).get("weights", {})
     w_sig = weights.get("signal", 0.35)
-    w_fel = weights.get("artifact_value", 0.35)
+    w_art = weights.get("artifact_value", 0.35)
     w_fea = weights.get("feasibility", 0.30)
     gate = profile.get("scoring", {}).get("feasibility_gate", 6)
 
@@ -241,7 +244,7 @@ def score_shortlist(
         s = item.scores.get("signal") or 0
         f = item.scores.get("artifact_value") or 0
         item.scores["composite"] = round(
-            w_sig * s + w_fel * f + w_fea * a["feasibility"], 1
+            w_sig * s + w_art * f + w_fea * a["feasibility"], 1
         )
 
     pick = by_key.get(data.get("pick_key") or "")

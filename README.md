@@ -6,23 +6,26 @@ Alignment work is scattered across lab blogs, personal sites, and forums,
 and most of it has no RSS feed. Keeping current means remembering to check
 a dozen places. This checks them for you.
 
-Once a day it polls 11 sources, compares what it finds against what it has
+Each run polls 11 sources, compares what it finds against what it has
 already seen, and summarizes only the genuinely new items with Claude. Each
 gets three or four bullets: the claim, the method, why it matters, and a
 limitation the authors name. Items are ranked, the top few get the full
-treatment, the rest get a line each. You get one email. On days when
-nothing was published, you get nothing.
+treatment, the rest get a line each. You get one email. When nothing was
+published, you get nothing.
+
+Runs daily by default; weekly and monthly are one config line away. Cadence
+changes how much a single run picks up, not how it works.
 
 Every summarized paper is also written to disk as markdown with YAML front
 matter, so the digest doubles as a searchable archive.
 
 Runs on GitHub Actions, or any scheduler, or by hand. Roughly $5-10/month
-in API cost.
+in API cost at a daily cadence.
 
-An optional weekly mode looks at the week's papers and picks the one most
-worth actually running, scored against your hardware and the libraries you
-use, then writes an implementation guide for it. Off with one line of
-config if you only want the digest.
+An optional second mode looks at the papers from the last N days and picks
+the one most worth actually running, scored against your hardware and the
+libraries you use, then writes an implementation guide for it. Off with one
+line of config if you only want the digest.
 
 ## Sources
 
@@ -148,16 +151,37 @@ command replaces your key with the command text, which then gets written to
 cp profile.example.yaml profile.yaml
 ```
 
-`profile.yaml` is gitignored. For the daily digest:
+`profile.yaml` is gitignored. For the digest:
 
 | Block | Purpose |
 |---|---|
 | `identity` | Name, email |
 | `goal.areas` | Topics you care about. Drives which items get bullets vs one line |
+| `schedule.cadence` | `daily` (default), `weekly`, or `monthly` |
 | `output` | Paths for digest, guides, state. Defaults to `out/`, all gitignored |
-| `email.top_n` | How many items get the expanded treatment. Default 3 |
+| `email.top_n` | How many items get the expanded treatment. Defaults by cadence |
 
-For the weekly reproduction pick, also set:
+### Cadence
+
+```yaml
+schedule:
+  cadence: weekly
+```
+
+This does not schedule anything — cron or Actions does that. It tells the
+tool how much ground one run covers, which sets three things:
+
+| Cadence | Sanity cap | Default `top_n` | Subject |
+|---|---|---|---|
+| `daily` | 25 | 3 | `[Research Watch] 6 new · …` |
+| `weekly` | 60 | 5 | `[Research Watch] Weekly · 14 new · …` |
+| `monthly` | 150 | 8 | `[Research Watch] Monthly · 48 new · …` |
+
+Set it to match your cron. A mismatch isn't fatal, it just means the cap and
+the item count are calibrated for the wrong window. Override the cap
+directly with `schedule.sanity_cap`, or per-run with `--cadence`.
+
+For the reproduction pick, also set:
 
 | Block | Purpose |
 |---|---|
@@ -174,15 +198,16 @@ that if it's listed.
 ```bash
 research-watch check       # parse all sources, print a table. No LLM, no email
 research-watch baseline    # mark everything currently published as seen
-research-watch daily       # summarize new items, archive, send
+research-watch digest      # summarize new items, archive, send
 ```
 
 **Run `baseline` once before anything else.** A first run finds every item
 every source has ever published (~240). Summarizing all of it costs about
 $50. `baseline` marks it seen at zero token cost and sets the waterline.
 
-Add `--dry-run` to `daily` or `weekly` to print the email instead of
-sending.
+Add `--dry-run` to `digest` or `pick` to print the email instead of
+sending. A dry run doesn't save state, so the items it previews stay new
+for the real run.
 
 ## Commands
 
@@ -190,14 +215,17 @@ sending.
 |---|---|---|
 | `check` | free | Parse all sources, print a table |
 | `baseline` | free | Mark current items as seen |
-| `daily` | ~$0.04/item | Summarize new items, archive, send digest |
-| `weekly` | ~$0.50 | Pick one paper, write repro guide, send |
+| `digest` | ~$0.04/item | Summarize new items, archive, send digest |
+| `pick` | ~$0.50 | Pick one paper, write repro guide, send |
+
+`daily` and `weekly` still work as aliases for `digest` and `pick`.
 
 Flags: `--sources`, `--profile`, `--base-dir`, `--env`, `--dry-run`,
-`--force`, `--days`, `-v`.
+`--force`, `--cadence`, `--days`, `-v`.
 
-`daily` aborts above 25 new items unless `--force` is passed. That volume
-means a parser changed or state was reset, not that 25 papers dropped.
+`digest` aborts above the sanity cap unless `--force` is passed. That volume
+means a parser changed or state was reset, not that 25 papers dropped
+overnight.
 
 ## Schedule
 
@@ -213,23 +241,37 @@ gh secret set GMAIL_APP_PASSWORD -R <owner>/<repo>
 `gh secret set` reads stdin when `--body` is omitted. Pass `-R` explicitly
 if the repo has multiple remotes.
 
-Defaults: daily at 15:47 UTC, weekly Fridays at 15:17 UTC. GitHub cron is
-UTC-only, so local time shifts with DST, and can drift 10-30 minutes under
-load.
+Defaults: digest at 15:47 UTC daily, pick on Fridays at 15:17 UTC. For a
+different cadence, change the cron and set `schedule.cadence` to match:
+
+```yaml
+- cron: "47 15 * * *"    # daily
+- cron: "47 15 * * 1"    # weekly, Mondays
+- cron: "47 15 1 * *"    # monthly, the 1st
+```
+
+GitHub cron is UTC-only, so local time shifts with DST, and can drift 10-30
+minutes under load.
+
+The pick reads what the digest archived, so don't schedule it more often
+than the digest, and keep its `--days` at least as long as the gap between
+digest runs.
 
 Cloud scheduling rather than cron/launchd because neither fires while a
 laptop is asleep. launchd catches up on wake; plain cron drops the run.
 
-## Weekly pick
+## Repro pick
 
-Triage for "which of this week's papers is worth spending a day running,
-on the hardware and libraries I actually have."
+Triage for "which of these papers is worth spending `repro_budget_days` on,
+given the hardware and libraries I actually have." Grades the last `--days`
+of archive and picks at most one. The default schedule is Fridays over a
+7-day window, but both are just cron and a flag.
 
-Off by default for the digest-only case:
+Off for the digest-only case:
 
 ```yaml
 email:
-  weekly_enabled: false
+  pick_enabled: false
 ```
 
 Each paper is scored 0-10 on three axes:
@@ -246,8 +288,8 @@ a property of the artifact, not a judgement of the paper.
 
 `feasibility` is a hard gate, default 6, configurable via
 `scoring.feasibility_gate`. Below it nothing gets picked regardless of the
-other two. Weeks with no pick are expected. Scope reduction counts in its
-favor: one layer instead of a sweep, one model instead of four.
+other two, and runs that pick nothing are expected. Scope reduction counts
+in its favor: one layer instead of a sweep, one model instead of four.
 
 Output is a markdown file in `out/guides/`:
 
@@ -268,7 +310,7 @@ flagged separately rather than dropped.
 ```
 fetch.py       source adapters, dedupe against state. No LLM.
 summarize.py   per-item summary + scoring. Runs only on new items.
-friday.py      weekly scoring and guide generation. Optional.
+pick.py        pick scoring and guide generation. Optional.
 email.py       plain-text rendering, SMTP over STARTTLS.
 ```
 
@@ -276,8 +318,8 @@ Model is `claude-opus-5`. The system prompt is byte-identical across items
 in a run so prompt caching applies; logs show `cached=N` when it hits.
 
 Failures are isolated per source and reported in the email footer. A source
-with history that returns zero items is treated as an error, not as an empty
-day, since a site redesign otherwise turns a scraper into a permanent silent
+with history that returns zero items is treated as an error, not as a quiet
+run, since a site redesign otherwise turns a scraper into a permanent silent
 success.
 
 ## Cost

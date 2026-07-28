@@ -162,7 +162,7 @@ sources:
   # ── Known gaps (no RSS; each needs a bespoke scraper) ───────────────
   # METR, Apollo Research, Transluce, Goodfire, UK AISI all 404 on every
   # feed path tried on 2026-07-28. Apollo and METR are the painful
-  # omissions — their evals work is directly Fellows-relevant.
+  # omissions if you follow evals work.
   #
   # Deferred, not forgotten:
   # - arxiv (export.arxiv.org/api/query) — needs aggressive filtering
