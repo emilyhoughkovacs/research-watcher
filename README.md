@@ -1,46 +1,70 @@
 # research-watcher
 
-**A scheduled email agent that keeps you current on AI alignment and safety
-research.**
+Scheduled email digest of new AI alignment and safety research. Polls 11
+sources daily, summarizes anything new with Claude, emails you the result.
+Sends nothing on days with no new publications.
 
-It watches 11 sources every day — Anthropic's four research teams,
-Transformer Circuits, the Alignment Science blog, Redwood, DeepMind Safety,
-EleutherAI, CAIS, and a karma-filtered Alignment Forum — and emails you a
-digest of anything new. If nothing was published, no email arrives. You
-stop refreshing sites and stop discovering good papers three months late.
+Optional weekly mode picks one paper and writes a reproduction guide.
 
-That's the whole core. Everything below is optional.
+## Sources
+
+**Tier 1: Anthropic**
+
+| Source | Method |
+|---|---|
+| Research: Interpretability | scrape |
+| Research: Alignment | scrape |
+| Research: Societal Impacts | scrape |
+| Research: Frontier Red Team | scrape |
+| Alignment Science blog | scrape |
+| Transformer Circuits | scrape |
+
+**Tier 2: safety orgs**
+
+| Source | Method |
+|---|---|
+| Redwood Research | RSS |
+| DeepMind Safety Research | RSS |
+| EleutherAI | RSS |
+| Center for AI Safety | scrape |
+| Alignment Forum | RSS, karma ≥ 30 |
+
+~10-20 items/week combined. Disable tier 2 in `sources.yaml` to cut volume.
+Configured per-source: `enabled`, `tier`, `section`, and the karma threshold
+on Alignment Forum.
+
+Not covered, each needs a custom scraper: METR, Apollo Research, Transluce,
+Goodfire, UK AISI. PRs welcome.
+
+**Note on feeds:** `alignment.anthropic.com/feed.xml` and
+`safe.ai/blog?format=rss` both return HTTP 200 with an HTML body. The first
+is a SPA catch-all route, the second is Webflow ignoring a Squarespace
+convention. Neither site has RSS. Verify a new source *parses*, not that it
+responds.
+
+## Output
 
 ```
-Every morning  →  one email, everything new across 11 sources,
-                  summarized. Silent on quiet days.
+Subject: [Research Watch] 6 new · Alignment, Red Team
+
+━━ TOP 3 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. Verbalizable Representations Form a Global Workspace in Language Models
+   Transformer Circuits · 2026-07-06
+   → Blog:  https://transformer-circuits.pub/2026/workspace/index.html
+   → Code:  https://github.com/anthropics/jacobian-lens
+   • [claim]
+   • [method]
+   • [why it matters]
+   • [limitation the authors name]
+
+━━ ALSO NEW ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• [title] — Redwood Research, 2026-07-27 · [link]
 ```
 
-## The Friday extra (optional)
+Top N ranked by relevance get bullets; the rest get one line. Every item is
+also written to `out/digest/` as markdown with YAML front matter.
 
-Once a week it can also pick a single paper from that week and write you a
-guide for reproducing it in one day — environment setup, prerequisites,
-numbered steps with checkpoints, and a blog post skeleton. It scores
-feasibility against *your* stated skill level, not against a generic ML
-engineer, and won't pick something you can't finish.
-
-This is a bonus, not the point. Turn it off with one line in your profile:
-
-```yaml
-email:
-  weekly_enabled: false
-```
-
-You'll still get the daily digest, and nothing else changes.
-
----
-
-## Setup
-
-Three things to do: install, get two credentials, write a profile. About
-15 minutes, most of it waiting on Google.
-
-### 1. Install
+## Install
 
 ```bash
 git clone https://github.com/emilyhoughkovacs/research-watcher
@@ -48,157 +72,119 @@ cd research-watcher
 python3 -m venv .venv && .venv/bin/pip install -e .
 ```
 
-### 2. Get your Anthropic API key
+Requires Python 3.11+.
 
-This is what pays for summarization. Roughly $5 to $10/month at normal
-volume.
+## Credentials
 
-1. Go to **[console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys)**
-2. Sign in (or create an account)
-3. Click **Create Key**
-4. Name it `research-watcher` — so it's obvious later what it's for, and
-   you can revoke it without touching anything else
-5. **Copy it now.** It starts `sk-ant-api03-` and is shown exactly once.
-   There is no way to view it again later; if you lose it you make a new
-   one. That's normal, not a mistake on your part.
+Two are needed: an Anthropic API key for summarization, and a Gmail app
+password for delivery.
 
-Also check **Settings → Billing** has credit on it. A key with no balance
-fails at runtime, not at setup, so it looks like a broken watcher rather
-than an empty wallet.
+**Anthropic API key**: [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys)
 
-### 3. Get a Gmail app password
+1. Create Key, name it `research-watcher`
+2. Copy it. Starts `sk-ant-api03-`, shown once, not retrievable later
+3. Confirm Settings → Billing has credit. An empty balance fails at
+   runtime, not at setup
 
-This is how the agent sends you mail. It is **not** your Google account
-password — it's a separate 16-character string scoped to mail only, which
-you can revoke on its own.
+**Gmail app password**: [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords)
 
-1. Go to **[myaccount.google.com/security](https://myaccount.google.com/security)**
-2. **2-Step Verification must already be on.** App passwords don't exist
-   as an option until it is. Turn it on first if needed.
-3. Under 2-Step Verification, scroll to **App passwords**
-   (direct link: [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords))
-4. Enter a name — `research-watcher` — and click **Create**
-5. Google shows you 16 characters in four groups, like `abcd efgh ijkl mnop`.
-   **Copy it.** Also shown only once.
+1. 2-Step Verification must be enabled first, or App passwords won't appear
+   as an option
+2. Create one named `research-watcher`
+3. Copy the 16 characters. Shown once. Spaces are display formatting,
+   either form works
 
-The spaces are display formatting. Keep them or strip them, Gmail accepts
-either.
+Not your Google account password. Scoped to mail, revocable on its own.
 
-### 4. Put both credentials in `.env`
+**Write both to `.env`:**
 
 ```bash
 cp .env.example .env
 chmod 600 .env
-open -e .env          # macOS TextEdit; or use whatever editor you like
 ```
 
-Replace the three placeholder values:
-
 ```
-ANTHROPIC_API_KEY=sk-ant-api03-your-actual-key-here
+ANTHROPIC_API_KEY=sk-ant-api03-...
 GMAIL_ADDRESS=you@gmail.com
 GMAIL_APP_PASSWORD=abcdefghijklmnop
 ```
 
-Save and close. `.env` is gitignored — it will never be committed.
+`.env` is gitignored.
 
 <details>
-<summary><b>Alternative: keep secrets out of your shell history</b> (read the warning first)</summary>
-
-On macOS you can pipe straight from the clipboard so the value never
-appears in your terminal or `~/.zsh_history`:
+<summary>Optional: pipe from clipboard to keep secrets out of shell history</summary>
 
 ```bash
 printf 'ANTHROPIC_API_KEY=%s\n' "$(pbpaste | tr -d '[:space:]')" >> .env
 ```
 
-> ### ⚠️ Type this by hand. Do not copy-paste it.
->
-> `pbpaste` reads your clipboard. If you *copy* the command above, your
-> clipboard now holds the command instead of your API key — and running it
-> writes the command text into `.env`. You'd end up with a file containing
-> `ANTHROPIC_API_KEY=printf 'ANTHROPIC_API_KEY=%s\n'...` and a confusing
-> auth error.
->
-> Copy your **key**, then type the command.
-
-Check what's actually on your clipboard first if you're unsure:
-
-```bash
-pbpaste | wc -c     # an Anthropic key is ~108 chars; an app password 17 or 20
-```
+**Type this, don't copy it.** `pbpaste` reads the clipboard. Copying the
+command replaces your key with the command text, which then gets written to
+`.env`.
 
 </details>
 
-### 5. Write your profile
+## Configure
 
 ```bash
 cp profile.example.yaml profile.yaml
 ```
 
-Open `profile.yaml` and edit. Every field has an inline comment. It's
-gitignored, so what you write stays yours.
+`profile.yaml` is gitignored. For the daily digest:
 
-**For the daily digest, three blocks matter:**
-
-| Block | What it does |
+| Block | Purpose |
 |---|---|
-| `identity` | Your name and email |
-| `goal.areas` | What you care about — tunes which items get the expanded treatment vs a one-line headline |
-| `output` | Where summaries and state get written. Defaults keep everything in `out/` inside the repo; point it at a notes repo if you'd rather |
+| `identity` | Name, email |
+| `goal.areas` | Topics you care about. Drives which items get bullets vs one line |
+| `output` | Paths for digest, guides, state. Defaults to `out/`, all gitignored |
+| `email.top_n` | How many items get the expanded treatment. Default 3 |
 
-That's enough to run. You can stop here.
+For the weekly reproduction pick, also set:
 
-**If you're using the Friday pick,** two more blocks matter, both in the
-same `profile.yaml`:
-
-| Block | What it does |
+| Block | Purpose |
 |---|---|
-| `skill` | Your languages, the libraries you know, the ones you *don't*, and your honest weak spot |
-| `skill.compute` | What hardware you can actually reach — laptop, free Colab, willing to rent a GPU |
+| `skill` | Languages, libraries you know, libraries you **don't**, weak spots |
+| `skill.compute` | Local hardware, Colab access, whether you'd rent a GPU |
+| `constraints.repro_budget_days` | Time budget per replication. Default 1 |
 
-`skill` is the input to "can this person finish this in a day." **Be honest
-in it, especially `unfamiliar`.** A paper needing two libraries you've never
-touched is a bad pick even when each one looks small, and the scoring can
-only know that if you tell it. Overstating your level produces guides you
-don't finish.
+`skill.unfamiliar` matters most. A paper requiring two libraries you've
+never used is a bad pick even when each looks small, and scoring only knows
+that if it's listed.
 
-### 6. Verify, then set the waterline
-
-```bash
-research-watch check
-```
-
-Expect a table of 11 sources and a few hundred items. Any `FAIL` row is a
-broken parser — fix before continuing.
+## Run
 
 ```bash
-research-watch baseline
+research-watch check       # parse all sources, print a table. No LLM, no email
+research-watch baseline    # mark everything currently published as seen
+research-watch daily       # summarize new items, archive, send
 ```
 
-**Run this once, before anything else.** The first run finds every item
-every source has ever published (~240). Summarizing all of it would cost
-around $50 and bury the signal. `baseline` marks it all as seen, spends
-zero tokens, and sets the waterline. Everything after is genuinely new.
+**Run `baseline` once before anything else.** A first run finds every item
+every source has ever published (~240). Summarizing all of it costs about
+$50. `baseline` marks it seen at zero token cost and sets the waterline.
 
-### 7. Try it
+Add `--dry-run` to `daily` or `weekly` to print the email instead of
+sending.
 
-```bash
-research-watch daily --dry-run      # prints the email instead of sending
-research-watch daily                # actually sends
-```
+## Commands
 
-Summaries land in `out/digest/` as one markdown file per paper, with YAML
-front matter. That's your searchable archive — grep it, link it from
-notes, feed it to something else later. `out/` is gitignored, so nothing
-gets committed unless you point `output` somewhere you want tracked.
+| Command | Cost | Description |
+|---|---|---|
+| `check` | free | Parse all sources, print a table |
+| `baseline` | free | Mark current items as seen |
+| `daily` | ~$0.04/item | Summarize new items, archive, send digest |
+| `weekly` | ~$0.50 | Pick one paper, write repro guide, send |
 
----
+Flags: `--sources`, `--profile`, `--base-dir`, `--env`, `--dry-run`,
+`--force`, `--days`, `-v`.
 
-## Scheduling
+`daily` aborts above 25 new items unless `--force` is passed. That volume
+means a parser changed or state was reset, not that 25 papers dropped.
 
-Copy the workflows from `workflows.example/` into whichever repo you want
-output to live in, then set the same three credentials as GitHub secrets:
+## Schedule
+
+Copy from `workflows.example/` into the repo you want output committed to,
+then set the same three credentials as secrets:
 
 ```bash
 gh secret set ANTHROPIC_API_KEY  -R <owner>/<repo>
@@ -206,101 +192,66 @@ gh secret set GMAIL_ADDRESS      -R <owner>/<repo>
 gh secret set GMAIL_APP_PASSWORD -R <owner>/<repo>
 ```
 
-`gh secret set` with no `--body` reads from stdin, so nothing lands in your
-shell history. Paste the value, then Ctrl-D.
+`gh secret set` reads stdin when `--body` is omitted. Pass `-R` explicitly
+if the repo has multiple remotes.
 
-> If your repo has more than one git remote, `gh` won't guess which one you
-> mean — that's what `-R owner/repo` is for. Getting it wrong could write
-> your credentials to someone else's repo, so `gh` errors rather than
-> assuming.
+Defaults: daily at 15:47 UTC, weekly Fridays at 15:17 UTC. GitHub cron is
+UTC-only, so local time shifts with DST, and can drift 10-30 minutes under
+load.
 
-Cloud scheduling rather than `cron` or `launchd` is deliberate: neither
-fires while a laptop is asleep. `launchd` at least catches up on wake,
-which plain `cron` does not, but neither is reliable for a daily job.
+Cloud scheduling rather than cron/launchd because neither fires while a
+laptop is asleep. launchd catches up on wake; plain cron drops the run.
 
-GitHub cron is UTC-only, so local fire time shifts an hour across DST, and
-can drift 10 to 30 minutes under load. A late email is not a failure.
+## Weekly reproduction pick
 
----
+Disabled with:
 
-## Commands
+```yaml
+email:
+  weekly_enabled: false
+```
 
-| Command | Cost | What it does |
-|---|---|---|
-| `check` | free | Parse every source, print a table. No LLM, no email. |
-| `baseline` | free | Mark everything currently published as seen. |
-| `daily` | ~$0.04/item | Summarize new items, archive them, send the digest. |
-| `weekly` | ~$0.50 | Pick one paper, write the repro guide, send. No-op if disabled. |
+When on, it scores each of the week's papers on three axes, 0-10:
 
-Add `--dry-run` to `daily` or `weekly` to print the email instead of
-sending it.
+- **signal**: does this matter for AI safety
+- **fellows**: would replicating it produce a public artifact worth having
+- **feasibility**: can *you* build it in `repro_budget_days`, given `skill`
 
-`daily` refuses to process more than 25 new items without `--force`. That
-many overnight means a parser changed or state was reset, not that 25
-papers dropped — the cap exists so a bug can't quietly drain your balance.
+Feasibility is a hard gate, default 6. Below it a paper can't be picked
+regardless of the other scores. If nothing clears the gate, no pick is made
+that week.
 
----
+Output is a markdown guide in `out/guides/`: environment setup, prerequisite
+checklist, numbered steps each with a verification checkpoint, likely
+failure points, a repo scaffold, and a blog post outline. Written from the
+paper's methods section, not its abstract.
 
-## Sources
-
-**Tier 1 (Anthropic):** Interpretability, Alignment, Societal Impacts, and
-Frontier Red Team research pages; the Alignment Science blog; Transformer
-Circuits.
-
-**Tier 2:** Redwood Research, DeepMind Safety Research, EleutherAI, CAIS,
-Alignment Forum (karma-filtered).
-
-Roughly 10 to 20 items a week combined. If that's too much, disable tier 2
-in `sources.yaml` — start with CAIS and Alignment Forum, the widest and
-least targeted.
-
-**On "verified":** an HTTP 200 does not mean a feed exists. Both
-`alignment.anthropic.com/feed.xml` and `safe.ai/blog?format=rss` return 200
-with an HTML body — the first is a SPA catch-all route, the second is
-Webflow ignoring a Squarespace convention. Neither site has RSS anywhere;
-both are scraped instead. When you add a source, confirm it **parses**, not
-that it responds.
-
-Known gaps, each needing a bespoke scraper: METR, Apollo Research,
-Transluce, Goodfire, UK AISI. Apollo and METR are the painful ones — PRs
-very welcome.
-
----
+Papers scoring high on signal but failing only on compute get flagged
+separately rather than dropped.
 
 ## How it works
 
 ```
-fetch.py       deterministic, no LLM. No new items → exit, zero tokens.
-summarize.py   per-item summary. Runs only on genuinely new work.
-friday.py      optional. Scores the week's shortlist in one call so
-               candidates are compared rather than judged in isolation,
-               then writes the guide from the paper's methods section.
-email.py       plain text — renders identically everywhere and can't
-               break in a way that hides content.
+fetch.py       source adapters, dedupe against state. No LLM.
+summarize.py   per-item summary + scoring. Runs only on new items.
+friday.py      weekly scoring and guide generation. Optional.
+email.py       plain-text rendering, SMTP over STARTTLS.
 ```
 
-Two design choices worth knowing:
+Model is `claude-opus-5`. The system prompt is byte-identical across items
+in a run so prompt caching applies; logs show `cached=N` when it hits.
 
-**A source that goes quiet is treated as broken.** If a source has history
-and suddenly returns zero items, that's reported as a failure, not a slow
-news day. A site redesign turning a scraper into a permanent cheerful
-"nothing today" is how a watcher actually dies.
-
-**The system prompt is byte-identical across items in a run**, so prompt
-caching applies. You'll see `cached=N` in the logs when it's working.
-
----
+Failures are isolated per source and reported in the email footer. A source
+with history that returns zero items is treated as an error, not as an empty
+day, since a site redesign otherwise turns a scraper into a permanent silent
+success.
 
 ## Cost
 
-About **$5 to $10/month** at 10-20 items/week on Claude Opus 5 with caching
-on. Measured: six papers cost $0.25.
+$5-10/month at 10-20 items/week. Measured: 6 papers, $0.25.
 
-If that's still too much: truncate paper input to abstract + intro +
-results (roughly halves it), or disable tier 2 sources.
-
----
+To reduce: truncate paper input to abstract/intro/results, or disable tier 2.
 
 ## License
 
-MIT.
+MIT
