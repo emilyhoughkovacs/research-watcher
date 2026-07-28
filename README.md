@@ -136,16 +136,32 @@ pbpaste | wc -c     # an Anthropic key is ~108 chars; an app password 17 or 20
 cp profile.example.yaml profile.yaml
 ```
 
-Open it and edit. Every field has a comment explaining what it drives. It
-is gitignored, so your goals and self-assessment stay yours.
+Open `profile.yaml` and edit. Every field has an inline comment. It's
+gitignored, so what you write stays yours.
 
-If you turned the Friday pick off, only the top section matters — identity,
-goal, and areas. The `skill` and `compute` blocks exist to calibrate
-feasibility scoring, which you're not using.
+**For the daily digest, three blocks matter:**
 
-If you left the Friday pick on: **be honest in `skill`.** It's the input to
-"can this person do it in a day." Overstating it produces guides you don't
-finish, which is the exact failure this is built to avoid.
+| Block | What it does |
+|---|---|
+| `identity` | Your name and email |
+| `goal.areas` | What you care about — tunes which items get the expanded treatment vs a one-line headline |
+| `output` | Where summaries and state get written. Defaults keep everything in `out/` inside the repo; point it at a notes repo if you'd rather |
+
+That's enough to run. You can stop here.
+
+**If you're using the Friday pick,** two more blocks matter, both in the
+same `profile.yaml`:
+
+| Block | What it does |
+|---|---|
+| `skill` | Your languages, the libraries you know, the ones you *don't*, and your honest weak spot |
+| `skill.compute` | What hardware you can actually reach — laptop, free Colab, willing to rent a GPU |
+
+`skill` is the input to "can this person finish this in a day." **Be honest
+in it, especially `unfamiliar`.** A paper needing two libraries you've never
+touched is a bad pick even when each one looks small, and the scoring can
+only know that if you tell it. Overstating your level produces guides you
+don't finish.
 
 ### 6. Verify, then set the waterline
 
@@ -171,6 +187,11 @@ zero tokens, and sets the waterline. Everything after is genuinely new.
 research-watch daily --dry-run      # prints the email instead of sending
 research-watch daily                # actually sends
 ```
+
+Summaries land in `out/digest/` as one markdown file per paper, with YAML
+front matter. That's your searchable archive — grep it, link it from
+notes, feed it to something else later. `out/` is gitignored, so nothing
+gets committed unless you point `output` somewhere you want tracked.
 
 ---
 
