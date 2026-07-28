@@ -1,0 +1,95 @@
+# Copy to profile.yaml (gitignored) and edit. This file is what makes the
+# tool yours: it retargets relevance scoring, feasibility calibration, and
+# the repro guide without touching any code.
+#
+# The feasibility score answers "can THIS PERSON do this in their stated
+# budget" — not "is this theoretically reproducible." Be honest in `skill`;
+# overstating it produces guides you won't finish.
+
+identity:
+  name: Your Name
+  email: you@example.com
+  # Where the weekly blog post goes. Leave blank if you don't blog.
+  blog_repo: yourname/yourname.github.io
+  blog_engine: jekyll              # jekyll | hugo | none
+  blog_post_dir: _posts            # jekyll convention: YYYY-MM-DD-slug.md
+  # Where the weekly demo repo gets created (guide gives you the command)
+  demo_repo_owner: yourname
+
+goal:
+  # What you're building toward. Drives the "fellows value" scoring axis —
+  # rename it to whatever your target actually is.
+  target: Anthropic Fellows Program
+  workstream: AI Safety Fellows
+  areas:
+    - mechanistic interpretability
+    - AI safety
+    - alignment
+  # What a reviewer of your application is looking for. Scoring rewards
+  # papers whose replication would demonstrate these.
+  signals_wanted:
+    - empirical ML research experience
+    - public artifacts (repos, writeups)
+    - hands-on work with LLM internals
+
+skill:
+  # Prose is fine — this goes into the prompt, not a parser.
+  python: "strong"
+  pytorch: "developing — comfortable with MLP/attention internals; has not
+            shipped a research-scale experiment"
+  familiar:
+    - numpy
+    - pandas
+    - sklearn
+    - pytorch
+    - huggingface transformers
+  unfamiliar:
+    - TransformerLens
+    - SAELens
+    - nnsight
+    - Neuronpedia API
+  # Name your real gap. Feasibility scoring uses it to flag when a paper
+  # would require learning two new things at once.
+  gap: "limited empirical experimentation / A-B testing experience"
+  compute:
+    local: "MacBook (MPS) — fine for GPT-2 small inference"
+    free: "Google Colab T4"
+    willing_to_rent: true      # if true, the ⚡ escalation section is enabled
+
+# Open research threads. A paper that touches one of these gets a signal
+# bonus. Leave empty if you don't have any yet.
+threads:
+  - id: example-thread
+    summary: "one-line description of what you're chasing"
+    ref: "path/to/your/notes.md"
+
+constraints:
+  # The hard filter. A paper that can't be demoed in this budget cannot
+  # win the weekly pick, no matter how relevant.
+  repro_budget_days: 1
+  deliverables:
+    - working demo in a new public GitHub repo
+    - blog post
+
+output:
+  # Paths are relative to the repo the workflow runs in.
+  archive_dir: research/watch
+  guides_dir: research/repro-guides
+  state_file: research/.watch-state.json
+
+email:
+  # Suppress the daily email when nothing new was found.
+  suppress_empty_daily: true
+  # Send the Friday email even on an empty week ("nothing worth picking"
+  # is itself information, and it's a two-line email).
+  send_empty_weekly: true
+  top_n: 3                     # expanded treatment; rest get headlines
+
+scoring:
+  weights:
+    signal: 0.35               # does this matter for AI safety
+    fellows: 0.35              # does replicating produce application signal
+    feasibility: 0.30          # can YOU do it in repro_budget_days
+  # Hard gate: below this, a paper cannot be the weekly pick. It routes to
+  # the ⚡ escalation section instead. Raise it if picks keep overrunning.
+  feasibility_gate: 6

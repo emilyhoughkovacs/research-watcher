@@ -1,0 +1,170 @@
+# Source list for research-watcher.
+#
+# Committed and shareable — this list is half the value of the tool.
+# All feeds verified HTTP 200 on 2026-07-28.
+#
+# kind: rss | anthropic_team | card_index | link_prefix
+# tier: 1 = core, 2 = broader safety orgs (disable to cut volume)
+# section: which email section items land in (top / also / alignment_blog)
+#
+# NOTE ON "VERIFIED": an HTTP 200 does NOT mean a feed exists. Both
+# alignment.anthropic.com/feed.xml and safe.ai/blog?format=rss return 200
+# with an HTML body — the first is a SPA catch-all route, the second is
+# Webflow ignoring a Squarespace-style query param. Neither site has RSS
+# anywhere. Both are scraped instead. When adding a source, confirm it
+# PARSES, not that it responds.
+
+defaults:
+  timeout_seconds: 20
+  user_agent: "research-watcher/0.1 (+https://github.com/emilyhoughkovacs/research-watcher)"
+
+sources:
+  # ── Tier 1: Anthropic research teams ────────────────────────────────
+  # Team pages are server-rendered; every item on a team page belongs to
+  # that team, so `area` comes from config rather than being parsed.
+  # Economic Research is deliberately excluded.
+
+  # category_label is stripped off flat card titles of the form
+  # "Jun 18, 2026 Frontier Red Team <actual title>" — some cards expose no
+  # heading element, only that concatenated text.
+
+  - id: anthropic-interpretability
+    kind: anthropic_team
+    tier: 1
+    enabled: true
+    url: https://www.anthropic.com/research/team/interpretability
+    display: "Anthropic · Interpretability"
+    category_label: "Interpretability"
+    area: interpretability
+    section: top
+    grade_repro: true          # interp papers get reproducibility signals
+
+  - id: anthropic-alignment
+    kind: anthropic_team
+    tier: 1
+    enabled: true
+    url: https://www.anthropic.com/research/team/alignment
+    display: "Anthropic · Alignment"
+    category_label: "Alignment"
+    area: alignment
+    section: top
+    grade_repro: true
+
+  - id: anthropic-societal-impacts
+    kind: anthropic_team
+    tier: 1
+    enabled: true
+    url: https://www.anthropic.com/research/team/societal-impacts
+    display: "Anthropic · Societal Impacts"
+    category_label: "Societal Impacts"
+    area: societal-impacts
+    section: top
+    grade_repro: false
+
+  - id: anthropic-frontier-red-team
+    kind: anthropic_team
+    tier: 1
+    enabled: true
+    url: https://www.anthropic.com/research/team/frontier-red-team
+    display: "Anthropic · Frontier Red Team"
+    category_label: "Frontier Red Team"
+    area: red-team
+    section: top
+    grade_repro: true
+
+  # ── Tier 1: Anthropic long-form / informal ──────────────────────────
+
+  - id: alignment-science
+    kind: card_index
+    tier: 1
+    enabled: true
+    url: https://alignment.anthropic.com/
+    display: "Anthropic Alignment Science"
+    area: alignment
+    section: alignment_blog   # own email section: faster, less formal
+    grade_repro: true
+    # feed.xml returns the SPA shell (HTTP 200, text/html). No feed exists
+    # at any path. Index is server-rendered: <a class="note" href="YYYY/slug/">
+    # wrapping an <h3> and a .description.
+
+  - id: transformer-circuits
+    kind: card_index
+    tier: 1
+    enabled: true
+    url: https://transformer-circuits.pub/
+    display: "Transformer Circuits"
+    area: interpretability
+    section: top
+    grade_repro: true
+    # No RSS. Highest-value interp source, and Circuits Updates do not
+    # reliably surface on anthropic.com/research — hence the scraper.
+    # Anchors carry data-date, which is authoritative when present.
+
+  # ── Tier 2: Safety orgs ─────────────────────────────────────────────
+  # Disable these first if weekly volume feels like homework.
+  # CAIS and Alignment Forum are the widest / least targeted.
+
+  - id: redwood-research
+    kind: rss
+    tier: 2
+    enabled: true
+    url: https://redwoodresearch.substack.com/feed
+    display: "Redwood Research"
+    area: alignment
+    section: also
+    grade_repro: true
+
+  - id: deepmind-safety
+    kind: rss
+    tier: 2
+    enabled: true
+    url: https://deepmindsafetyresearch.medium.com/feed
+    display: "DeepMind Safety Research"
+    area: alignment
+    section: also
+    grade_repro: true
+
+  - id: eleuther
+    kind: rss
+    tier: 2
+    enabled: true
+    url: https://blog.eleuther.ai/index.xml
+    display: "EleutherAI"
+    area: interpretability
+    section: also
+    grade_repro: true
+
+  - id: cais
+    kind: link_prefix
+    tier: 2
+    enabled: true
+    url: https://safe.ai/blog
+    link_prefix: "/blog/"
+    display: "Center for AI Safety"
+    area: alignment
+    section: also
+    grade_repro: false
+    # ?format=rss is a Squarespace convention; safe.ai is Webflow and
+    # ignores it, returning the blog HTML with a 200. Scraped instead.
+
+  - id: alignment-forum
+    kind: rss
+    tier: 2
+    enabled: true
+    # Karma-filtered — the unfiltered feed is a firehose.
+    # Lower karmaThreshold for more volume, raise for less.
+    url: https://www.alignmentforum.org/feed.xml?view=community-rss&karmaThreshold=30
+    display: "Alignment Forum"
+    area: alignment
+    section: also
+    grade_repro: true
+
+  # ── Known gaps (no RSS; each needs a bespoke scraper) ───────────────
+  # METR, Apollo Research, Transluce, Goodfire, UK AISI all 404 on every
+  # feed path tried on 2026-07-28. Apollo and METR are the painful
+  # omissions — their evals work is directly Fellows-relevant.
+  #
+  # Deferred, not forgotten:
+  # - arxiv (export.arxiv.org/api/query) — needs aggressive filtering
+  # - huggingface daily papers (huggingface.co/api/daily_papers) — curated,
+  #   10-20/day, better signal-to-noise than raw arXiv. Add this first.

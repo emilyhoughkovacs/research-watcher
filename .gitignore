@@ -1,0 +1,30 @@
+# Secrets — never commit
+.env
+*.env
+!.env.example
+
+# Personal profile — your goals, skill level, research threads.
+# Ships as profile.example.yaml; your real one stays local.
+profile.yaml
+watch-profile.yaml
+
+# Local run artifacts
+.watch-state.json
+out/
+guides/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/

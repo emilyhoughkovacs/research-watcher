@@ -1,0 +1,74 @@
+name: Research Watch — weekly pick
+
+on:
+  schedule:
+    # Fridays 15:17 UTC (08:17 PT summer / 07:17 winter). Runs BEFORE the
+    # daily so the week's pick lands at the top of the inbox, not under it.
+    - cron: "17 15 * * 5"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Print the email instead of sending it"
+        type: boolean
+        default: false
+      days:
+        description: "How many days of archive to consider"
+        default: "7"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: research-watch
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30      # guide generation re-reads the paper in full
+    steps:
+      - name: Check out ehk-os
+        uses: actions/checkout@v4
+
+      - name: Check out the research-watcher tool
+        uses: actions/checkout@v4
+        with:
+          repository: emilyhoughkovacs/research-watcher
+          path: .tool
+          token: ${{ secrets.RESEARCH_WATCHER_TOKEN || github.token }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install --quiet ./.tool
+
+      - name: Grade the week and write the guide
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: |
+          research-watch \
+            --sources .tool/sources.yaml \
+            --profile research/watch-profile.yaml \
+            --base-dir . \
+            --env /nonexistent \
+            weekly \
+            --days ${{ github.event.inputs.days || 7 }} \
+            ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}
+
+      - name: Commit the guide
+        run: |
+          git config user.name  "research-watcher"
+          git config user.email "actions@github.com"
+          git add research/repro-guides research/watch research/.watch-state.json 2>/dev/null || true
+          if git diff --staged --quiet; then
+            echo "no guide produced this week"
+          else
+            git commit -m "research-watch: weekly pick $(date -u +%Y-%m-%d)"
+            git pull --rebase --autostash origin main
+            git push
+          fi

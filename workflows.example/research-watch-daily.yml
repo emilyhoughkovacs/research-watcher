@@ -1,0 +1,80 @@
+name: Research Watch — daily
+
+on:
+  schedule:
+    # 15:47 UTC. Off-the-hour deliberately: every user who asks for "9am"
+    # gets minute 0, so the scheduler is busiest there and drifts most.
+    # GitHub cron is UTC-only, so this is 08:47 PT in summer and 07:47 in
+    # winter. Harmless for a digest; noted so the shift isn't a surprise.
+    - cron: "47 15 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Print the email instead of sending it"
+        type: boolean
+        default: false
+      mode:
+        description: "daily = normal run; baseline = mark all as seen, no cost"
+        type: choice
+        options: [daily, baseline]
+        default: daily
+
+permissions:
+  contents: write        # to commit the archive and state file back
+
+concurrency:
+  group: research-watch
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out ehk-os
+        uses: actions/checkout@v4
+
+      - name: Check out the research-watcher tool
+        uses: actions/checkout@v4
+        with:
+          repository: emilyhoughkovacs/research-watcher
+          path: .tool
+          # Needed only while research-watcher is PRIVATE. Once it is public,
+          # delete this line and the RESEARCH_WATCHER_TOKEN secret.
+          token: ${{ secrets.RESEARCH_WATCHER_TOKEN || github.token }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install --quiet ./.tool
+
+      - name: Run
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: |
+          research-watch \
+            --sources .tool/sources.yaml \
+            --profile research/watch-profile.yaml \
+            --base-dir . \
+            --env /nonexistent \
+            ${{ github.event.inputs.mode || 'daily' }} \
+            ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}
+
+      - name: Commit archive and state
+        run: |
+          git config user.name  "research-watcher"
+          git config user.email "actions@github.com"
+          git add research/watch research/.watch-state.json research/repro-guides 2>/dev/null || true
+          if git diff --staged --quiet; then
+            echo "nothing new to commit"
+          else
+            git commit -m "research-watch: daily $(date -u +%Y-%m-%d)"
+            # Another run may have landed while this one worked.
+            git pull --rebase --autostash origin main
+            git push
+          fi
