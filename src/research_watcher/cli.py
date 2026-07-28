@@ -35,6 +35,13 @@ log = logging.getLogger("research_watcher")
 # (a parser change, a reset state file) — refuse rather than spend.
 DAILY_SANITY_CAP = 25
 
+# Self-contained defaults: a fresh clone writes only inside itself, and
+# out/ is gitignored. Override in profile.yaml → output: to write into a
+# notes repo instead.
+DEFAULT_ARCHIVE = "out/digest"
+DEFAULT_GUIDES = "out/guides"
+DEFAULT_STATE = "out/state.json"
+
 
 def _setup(args) -> tuple[dict, State, Path]:
     # Explicit path: find_dotenv() walks the call stack and fails when the
@@ -51,7 +58,16 @@ def _setup(args) -> tuple[dict, State, Path]:
     profile = summarize.load_profile(args.profile)
     out = profile.get("output", {})
     base = Path(args.base_dir).expanduser()
-    state = State(base / out.get("state_file", "research/.watch-state.json"))
+    if not base.is_dir():
+        sys.exit(
+            f"error: --base-dir {base} does not exist.\n"
+            "  Output paths are resolved against it; pointing at a missing\n"
+            "  directory would scatter files somewhere unexpected."
+        )
+    # Defaults keep everything inside the repo (out/ is gitignored) so a
+    # fresh clone is self-contained. Override in profile.yaml to write into
+    # a notes repo instead.
+    state = State(base / out.get("state_file", DEFAULT_STATE))
     return profile, state, base
 
 
@@ -120,7 +136,7 @@ def cmd_daily(args) -> int:
     app_pw = _require("GMAIL_APP_PASSWORD")
 
     out = profile.get("output", {})
-    archive_dir = base / out.get("archive_dir", "research/watch")
+    archive_dir = base / out.get("archive_dir", DEFAULT_ARCHIVE)
 
     results = fetch_all(args.sources, state=state)
     for r in results:
@@ -198,8 +214,8 @@ def cmd_weekly(args) -> int:
     app_pw = _require("GMAIL_APP_PASSWORD")
 
     out = profile.get("output", {})
-    archive_dir = base / out.get("archive_dir", "research/watch")
-    guides_dir = base / out.get("guides_dir", "research/repro-guides")
+    archive_dir = base / out.get("archive_dir", DEFAULT_ARCHIVE)
+    guides_dir = base / out.get("guides_dir", DEFAULT_GUIDES)
 
     items = _load_week(archive_dir, args.days)
     items = [i for i in items if not state.already_picked(i.key)]

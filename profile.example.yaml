@@ -72,10 +72,21 @@ constraints:
     - blog post
 
 output:
-  # Paths are relative to the repo the workflow runs in.
-  archive_dir: research/watch
-  guides_dir: research/repro-guides
-  state_file: research/.watch-state.json
+  # Where summaries, guides, and dedupe state get written. Relative to
+  # --base-dir, which defaults to the current directory.
+  #
+  # These defaults keep everything inside the repo (out/ is gitignored),
+  # so a fresh clone is fully self-contained and writes nothing outside
+  # itself. Nothing else needs to exist for this to work.
+  #
+  # If you keep a notes repo or personal wiki, point these at it instead
+  # and run with --base-dir /path/to/that/repo, e.g.:
+  #   archive_dir: research/watch
+  #   guides_dir:  research/repro-guides
+  #   state_file:  research/.watch-state.json
+  archive_dir: out/digest
+  guides_dir: out/guides
+  state_file: out/state.json
 
 email:
   # Suppress the daily email when nothing new was found.
