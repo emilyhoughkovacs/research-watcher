@@ -202,32 +202,48 @@ load.
 Cloud scheduling rather than cron/launchd because neither fires while a
 laptop is asleep. launchd catches up on wake; plain cron drops the run.
 
-## Weekly reproduction pick
+## Weekly pick
 
-Disabled with:
+Triage for "which of this week's papers is worth spending a day running,
+on the hardware and libraries I actually have."
+
+Off by default for the digest-only case:
 
 ```yaml
 email:
   weekly_enabled: false
 ```
 
-When on, it scores each of the week's papers on three axes, 0-10:
+Each paper is scored 0-10 on three axes:
 
-- **signal**: does this matter for AI safety
-- **fellows**: would replicating it produce a public artifact worth having
-- **feasibility**: can *you* build it in `repro_budget_days`, given `skill`
+| Axis | Question |
+|---|---|
+| `signal` | Does the result matter, independent of reproducibility |
+| `artifact_value` | Is there something worth producing: a replication, a negative result, a reusable implementation, an extension |
+| `feasibility` | Can it be run in `repro_budget_days` given `skill` and `skill.compute` |
 
-Feasibility is a hard gate, default 6. Below it a paper can't be picked
-regardless of the other scores. If nothing clears the gate, no pick is made
-that week.
+`artifact_value` penalizes work whose central claim rests on a proprietary
+model or unreleased data, since nobody outside the lab can check it. That's
+a property of the artifact, not a judgement of the paper.
 
-Output is a markdown guide in `out/guides/`: environment setup, prerequisite
-checklist, numbered steps each with a verification checkpoint, likely
-failure points, a repo scaffold, and a blog post outline. Written from the
-paper's methods section, not its abstract.
+`feasibility` is a hard gate, default 6, configurable via
+`scoring.feasibility_gate`. Below it nothing gets picked regardless of the
+other two. Weeks with no pick are expected. Scope reduction counts in its
+favor: one layer instead of a sweep, one model instead of four.
 
-Papers scoring high on signal but failing only on compute get flagged
-separately rather than dropped.
+Output is a markdown file in `out/guides/`:
+
+- The experiment, written from the methods section: which layers, which
+  hook points, what N, what the comparison condition is
+- Environment and prerequisites, with actual imports for anything listed in
+  `skill.unfamiliar` and no hand-holding for anything in `skill.familiar`
+- Numbered steps, each with a verification checkpoint
+- Likely failure points, weighted toward silent-correctness traps
+  (layer indexing, pre- vs post-LN hooks, tokenizer mismatches) over crashes
+- A writeup outline, including a section for what didn't reproduce
+
+Papers scoring high on signal but failing feasibility only on compute get
+flagged separately rather than dropped.
 
 ## How it works
 

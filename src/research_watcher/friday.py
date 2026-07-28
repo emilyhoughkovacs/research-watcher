@@ -9,7 +9,7 @@ Two LLM calls:
      section, not a summary of a summary.
 
 The feasibility gate is the point of this module. A paper below the gate
-cannot win regardless of signal or fellows value, because a guide you
+cannot win regardless of signal or artifact value, because a guide you
 can't execute in the budget is a guide you won't start.
 """
 
@@ -94,26 +94,28 @@ def build_scoring_prompt(profile: dict) -> str:
     gate = profile.get("scoring", {}).get("feasibility_gate", 6)
     budget = cons.get("repro_budget_days", 1)
 
-    return f"""You are picking one paper for a researcher to reproduce this week.
+    return f"""Pick the one paper from this week most worth actually running,
+given the reader's environment and a {budget}-day budget.
 
-## Who is doing the work
+## Environment
 
-This matters more than anything else here. Feasibility means "can THIS
-person do it in {budget} day(s)", not "is this theoretically reproducible".
+Feasibility means "can this be run in {budget} day(s) on THIS setup", not
+"is this reproducible in principle". Nearly everything is reproducible in
+principle; that is not the useful question.
 
   Python: {skill.get('python', 'unknown')}
-  PyTorch: {skill.get('pytorch', 'unknown')}
-  Comfortable with: {', '.join(skill.get('familiar', []))}
-  Has NOT used: {', '.join(skill.get('unfamiliar', []))}
-  Known gap: {skill.get('gap', 'unspecified')}
+  ML frameworks: {skill.get('pytorch', 'unknown')}
+  Uses regularly: {', '.join(skill.get('familiar', []))}
+  Has not used: {', '.join(skill.get('unfamiliar', []))}
+  Weak spot: {skill.get('gap', 'unspecified')}
 
-  Compute available:
+  Compute:
     local: {compute.get('local', 'unknown')}
     free:  {compute.get('free', 'unknown')}
     willing to rent GPU: {compute.get('willing_to_rent', False)}
 
-  Goal: {goal.get('target')} — {', '.join(goal.get('areas', []))}
-  Deliverables per replication: {', '.join(cons.get('deliverables', []))}
+  Interests: {', '.join(goal.get('areas', []))}
+  Intended output: {', '.join(cons.get('deliverables', [])) or 'a working run'}
 
 ## Feasibility scale (0-10)
 
@@ -127,16 +129,23 @@ person do it in {budget} day(s)", not "is this theoretically reproducible".
         harness from scratch. Multi-day.
   0-2   Frontier model access, multi-GPU, or proprietary data.
 
-Penalise learning two new things at once — that is what actually eats the
-day. A paper needing both TransformerLens AND a trained SAE is not a 6
-even if each part looks small.
+Penalise learning two unfamiliar things at once. That is what actually
+eats the day, and it compounds rather than adds: a paper needing both a
+new framework AND a trained SAE is not a 6 even when each part looks
+small on its own.
+
+Scope reduction is legitimate and should raise the score. If the central
+claim can be checked on one layer of a smaller model rather than the full
+sweep the authors ran, score the reduced version — say so in the
+reasoning. A partial run that answers the question beats a full
+replication that does not finish.
 
 ## The gate
 
 Feasibility must be >= {gate} to be picked. Below that, the paper CANNOT be
 the pick no matter how high its other scores. Set pick_key to null if
-nothing clears the gate — an honest "nothing this week" beats a guide
-that can't be finished.
+nothing clears the gate. "Nothing this week is worth the day" is a
+legitimate and expected result, not a failure to find something.
 
 ## Escalation
 
@@ -171,7 +180,7 @@ def score_shortlist(
                 "source": i.source_display,
                 "area": i.area,
                 "signal": i.scores.get("signal"),
-                "fellows": i.scores.get("fellows"),
+                "artifact_value": i.scores.get("artifact_value"),
                 "repro_signals": i.repro_signals,
                 "bullets": i.bullets,
                 "links": {"blog": i.url, "paper": i.paper_url, "code": i.code_url},
@@ -213,7 +222,7 @@ def score_shortlist(
     estimates: dict[str, float] = {}
     weights = profile.get("scoring", {}).get("weights", {})
     w_sig = weights.get("signal", 0.35)
-    w_fel = weights.get("fellows", 0.35)
+    w_fel = weights.get("artifact_value", 0.35)
     w_fea = weights.get("feasibility", 0.30)
     gate = profile.get("scoring", {}).get("feasibility_gate", 6)
 
@@ -230,7 +239,7 @@ def score_shortlist(
         estimates[item.key] = a.get("est_build_hours") or 0
 
         s = item.scores.get("signal") or 0
-        f = item.scores.get("fellows") or 0
+        f = item.scores.get("artifact_value") or 0
         item.scores["composite"] = round(
             w_sig * s + w_fel * f + w_fea * a["feasibility"], 1
         )
@@ -405,38 +414,58 @@ def build_guide_prompt(profile: dict) -> str:
     ident = profile.get("identity", {})
     cons = profile.get("constraints", {})
 
-    return f"""Write a reproduction guide. The reader will open this and start
-typing — it must be actionable without further research.
+    return f"""Write an implementation guide for running this paper's central
+experiment. The reader opens it and starts working, so it must be
+actionable without further reading.
+
+Assume a competent researcher who has not read this specific paper. Do
+not explain what an SAE is, what a residual stream is, or why
+interpretability matters. Explain what THIS paper did, precisely enough
+to re-run it.
 
 ## The single most important rule
 
 Write from the METHODS section, not the abstract. "They found that models
-have a global workspace" is useless for building. "Hook the residual
-stream at layer N, project through the SAE decoder, measure cosine
-similarity against the reference direction across a prompt set" is what
-they actually need. Outcome framing is a failure of this guide.
+have a global workspace" is useless for implementing. "Average the
+Jacobian from layer-ℓ activations to final-layer residuals over ~1000
+prompts, then read out token-indexed directions from its rows" is what
+the reader needs. Outcome framing is a failure of this guide.
 
-## Who is doing this
+State the actual quantities: which layers, which hook points, which
+dataset, what N, what the comparison condition is. If the paper leaves a
+choice underspecified, say so and name a defensible default rather than
+skipping it.
+
+## Environment
 
   Python: {skill.get('python')}
-  PyTorch: {skill.get('pytorch')}
-  Knows: {', '.join(skill.get('familiar', []))}
-  Has NOT used: {', '.join(skill.get('unfamiliar', []))}
+  ML frameworks: {skill.get('pytorch')}
+  Uses regularly: {', '.join(skill.get('familiar', []))}
+  Has not used: {', '.join(skill.get('unfamiliar', []))}
   Compute: local={compute.get('local')} / free={compute.get('free')}
 
-For any library in the "has NOT used" list, do not assume familiarity.
-Give the actual import and the actual call, not "load the SAE as usual".
+For a library in the "has not used" list, give the actual import and the
+actual call rather than "load the SAE as usual". For one they use
+regularly, don't belabour it. Calibrate to the list, not to a beginner.
 
 ## Budget
 
-{cons.get('repro_budget_days', 1)} day, ending in:
-{chr(10).join('  - ' + d for d in cons.get('deliverables', []))}
+{cons.get('repro_budget_days', 1)} day, producing:
+{chr(10).join('  - ' + d for d in cons.get('deliverables', [])) or '  - a working run'}
 
-Scope `what_youre_building` to fit. The minimum viable demo that
-demonstrates the core claim beats a faithful full replication that
-doesn't finish. If your own time estimate exceeds the budget, say so in
-the estimates — an honest overrun flag is more useful than a guide that
-silently doesn't fit.
+Scope `what_youre_building` to fit, and prefer the reduced version that
+still answers the question: one layer instead of a sweep, one model
+instead of four, the ablation that would falsify the claim rather than
+every ablation in the paper. Say explicitly what you cut and what that
+costs in `what_youre_building`.
+
+A negative or partial result is a real outcome. If the reduced version
+might not reproduce the paper's finding, say what that would mean rather
+than assuming success.
+
+If your own estimate exceeds the budget, report it honestly in the
+estimates. An overrun flag is more useful than a guide that silently
+doesn't fit.
 
 ## Steps
 
@@ -447,14 +476,19 @@ wrongness at hour 2 costs the whole day.
 
 ## Hazards
 
-2-3 things most likely to eat time on THIS paper specifically. Version
-pins, tokenizer mismatches, layer-indexing conventions (0- vs 1-based),
-device placement. Not generic advice.
+2-3 things most likely to eat time on THIS paper specifically. Layer
+indexing conventions (0- vs 1-based, pre- vs post-LN hook points),
+tokenizer mismatches between the paper's model and the available
+checkpoint, version pins where an API changed, device placement. Silent
+correctness traps beat crashes here: a mismatch that runs fine and
+produces plausible wrong numbers costs more than an import error.
 
-## Blog skeleton
+## Writeup outline
 
 Section headings plus one line each on what belongs there. Do NOT draft
-prose — the reader writes it. Blog is {ident.get('blog_engine', 'jekyll')}.
+prose. Include a section for what did not reproduce or what you had to
+change, because that is usually the part worth reading. Format is
+{ident.get('blog_engine', 'markdown')}.
 
 ## Formatting
 

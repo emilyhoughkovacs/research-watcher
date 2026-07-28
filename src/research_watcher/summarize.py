@@ -3,7 +3,7 @@
 Runs only on items `fetch` flagged as new, so a quiet day costs zero tokens.
 
 Two-stage scoring, deliberately split:
-  - HERE (daily): `signal` and `fellows`. Both are properties of the paper
+  - HERE (daily): `signal` and `artifact_value`. Both are properties of the paper
     and are cheap to judge while the text is already loaded.
   - FRIDAY: `feasibility`, which needs deep profile context, plus the
     composite and the repro tier.
@@ -57,10 +57,11 @@ _SCHEMA = {
             "description": "0-10: how much this matters for AI safety, "
             "independent of reproducibility",
         },
-        "fellows": {
+        "artifact_value": {
             "type": "integer",
-            "description": "0-10: would replicating produce visible signal "
-            "for the stated goal",
+            "description": "0-10: is there something worth producing by working "
+            "through this — a replication, a negative result, a reusable "
+            "implementation, or an extension",
         },
         "repro_signals": {
             "type": "object",
@@ -106,7 +107,7 @@ _SCHEMA = {
             "additionalProperties": False,
         },
     },
-    "required": ["bullets", "paper_url", "code_url", "signal", "fellows", "repro_signals"],
+    "required": ["bullets", "paper_url", "code_url", "signal", "artifact_value", "repro_signals"],
     "additionalProperties": False,
 }
 
@@ -125,40 +126,43 @@ def build_system_prompt(profile: dict) -> str:
         f"  - {t.get('id')}: {t.get('summary')}" for t in threads
     ) or "  (none recorded)"
 
-    return f"""You are triaging new AI safety and interpretability publications for a \
-specific researcher. Your output feeds a daily digest and a weekly \
-reproduction pick.
+    interests = ", ".join(goal.get("areas", [])) or "AI safety broadly"
+    return f"""You are triaging new AI safety and interpretability publications \
+for a working researcher. Your output feeds a daily digest and a weekly \
+"which of these is worth running" pick.
 
-## Who this is for
+## Reader
 
-Goal: {goal.get('target', 'unspecified')} ({goal.get('workstream', '')})
-Focus areas: {', '.join(goal.get('areas', []))}
-Signals they need to demonstrate: {', '.join(goal.get('signals_wanted', []))}
+Research interests: {interests}
 
-Technical level:
+Technical context (used for feasibility, assessed separately):
   Python: {skill.get('python', 'unknown')}
-  PyTorch: {skill.get('pytorch', 'unknown')}
-  Familiar with: {', '.join(skill.get('familiar', []))}
-  NOT yet familiar with: {', '.join(skill.get('unfamiliar', []))}
-  Known gap: {skill.get('gap', 'unspecified')}
+  ML frameworks: {skill.get('pytorch', 'unknown')}
+  Uses regularly: {', '.join(skill.get('familiar', []))}
+  Has not used: {', '.join(skill.get('unfamiliar', []))}
 
-Open research threads (a paper touching one of these is worth more):
+Open threads (a paper bearing on one of these is worth more):
 {thread_lines}
 
 ## Scoring
 
 `signal` (0-10) — does this matter for AI safety, independent of whether \
-it can be reproduced? High: advances a core safety question, or measures \
+it can be reproduced? High: advances a core question, or measures \
 something previously unmeasurable. Low: capability work with a safety \
-framing, position pieces, surveys. Ignore citation count, author \
-prominence, and buzz — those track prestige, not signal.
+framing, position pieces, surveys, program announcements. Ignore citation \
+count, author prominence, and venue — those track prestige, not signal.
 
-`fellows` (0-10) — would replicating this produce something a reviewer for \
-the stated goal would care about? High: the replication yields a public \
-artifact demonstrating empirical ML research ability, AND the method is \
-specified well enough that a faithful replication is verifiable. A \
-brilliant paper with no released method scores LOW here — that is \
-intentional, not an oversight.
+`artifact_value` (0-10) — is there something worth producing by working \
+through this? Replication that confirms or fails to confirm a result, a \
+reusable implementation of a method, a negative result, or an obvious \
+extension all count. The bar is whether the work would tell someone \
+something they did not already know.
+
+High requires the method be specified well enough that a run is \
+verifiable — you can tell whether you got the same answer. A paper whose \
+central claim rests on a proprietary model or unreleased data scores LOW \
+even when the idea is excellent, because nobody outside the lab can check \
+it. That is a property of the artifact, not a judgement of the work.
 
 Do NOT score feasibility. That is assessed separately with fuller context.
 
@@ -269,7 +273,7 @@ def summarize_item(client: Anthropic, item: Item, system_prompt: str) -> None:
     if item.paper_url and item.paper_url.rstrip("/") == item.url.rstrip("/"):
         item.paper_url = None
     item.scores["signal"] = data.get("signal")
-    item.scores["fellows"] = data.get("fellows")
+    item.scores["artifact_value"] = data.get("artifact_value")
     item.repro_signals = data.get("repro_signals", {})
 
     usage = resp.usage
@@ -326,12 +330,12 @@ def write_archive(item: Item, archive_dir) -> str:
 def rank(items: list[Item], top_n: int) -> tuple[list[Item], list[Item]]:
     """Split into (expanded, headline-only) by daily score.
 
-    Daily rank uses signal + fellows only; feasibility is a Friday concern.
+    Daily rank uses signal + artifact_value; feasibility is a weekly concern.
     """
 
     def score(i: Item) -> float:
         s = i.scores.get("signal") or 0
-        f = i.scores.get("fellows") or 0
+        f = i.scores.get("artifact_value") or 0
         return (s + f) / 2
 
     ordered = sorted(items, key=score, reverse=True)

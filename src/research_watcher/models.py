@@ -37,7 +37,7 @@ class Item:
     # ── grading (friday) ────────────────────────────────────────────
     scores: dict = field(default_factory=lambda: {
         "signal": None,
-        "fellows": None,
+        "artifact_value": None,
         "feasibility": None,
         "composite": None,
     })

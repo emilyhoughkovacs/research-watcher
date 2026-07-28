@@ -153,7 +153,7 @@ def render_friday(
     lines += [
         "",
         f"SCORES   signal {pick.scores.get('signal')}  ·  "
-        f"fellows {pick.scores.get('fellows')}  ·  "
+        f"artifact {pick.scores.get('artifact_value')}  ·  "
         f"feasibility {pick.scores.get('feasibility')}   →  "
         f"{pick.scores.get('composite')}",
         "",
@@ -187,7 +187,7 @@ def render_friday(
             f"needs {esig.get('smallest_viable_model') or 'more than local'} "
             f"({esig.get('compute_floor', '?')})",
             f"  signal {escalation.scores.get('signal')} · "
-            f"fellows {escalation.scores.get('fellows')}",
+            f"artifact {escalation.scores.get('artifact_value')}",
             f"  {escalation.url}",
             "",
             "  High signal, low effort, but fails the local-compute bar.",
@@ -211,7 +211,7 @@ def render_friday(
 def _score_str(i: Item) -> str:
     s = i.scores
     return (
-        f"signal {s.get('signal', '-')} · fellows {s.get('fellows', '-')} · "
+        f"signal {s.get('signal', '-')} · artifact {s.get('artifact_value', '-')} · "
         f"feas {s.get('feasibility', '-')}"
         + (f" → {s['composite']}" if s.get("composite") is not None else "")
     )
