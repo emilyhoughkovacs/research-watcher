@@ -1,10 +1,28 @@
 # research-watcher
 
-Scheduled email digest of new AI alignment and safety research. Polls 11
-sources daily, summarizes anything new with Claude, emails you the result.
-Sends nothing on days with no new publications.
+Scheduled email digest of new AI alignment and safety research.
 
-Optional weekly mode picks one paper and writes a reproduction guide.
+Alignment work is scattered across lab blogs, personal sites, and forums,
+and most of it has no RSS feed. Keeping current means remembering to check
+a dozen places. This checks them for you.
+
+Once a day it polls 11 sources, compares what it finds against what it has
+already seen, and summarizes only the genuinely new items with Claude. Each
+gets three or four bullets: the claim, the method, why it matters, and a
+limitation the authors name. Items are ranked, the top few get the full
+treatment, the rest get a line each. You get one email. On days when
+nothing was published, you get nothing.
+
+Every summarized paper is also written to disk as markdown with YAML front
+matter, so the digest doubles as a searchable archive.
+
+Runs on GitHub Actions, or any scheduler, or by hand. Roughly $5-10/month
+in API cost.
+
+An optional weekly mode looks at the week's papers and picks the one most
+worth actually running, scored against your hardware and the libraries you
+use, then writes an implementation guide for it. Off with one line of
+config if you only want the digest.
 
 ## Sources
 
