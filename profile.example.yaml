@@ -80,10 +80,17 @@ output:
 email:
   # Suppress the daily email when nothing new was found.
   suppress_empty_daily: true
-  # Send the Friday email even on an empty week ("nothing worth picking"
-  # is itself information, and it's a two-line email).
-  send_empty_weekly: true
   top_n: 3                     # expanded treatment; rest get headlines
+
+  # The Friday reproduction pick is optional. Set false and you get the
+  # daily digest and nothing else — the watcher still works completely.
+  # Turn it off if you want to stay current without the homework.
+  weekly_enabled: true
+
+  # Send the Friday email even on an empty week ("nothing cleared the bar"
+  # is itself information, and it's a two-line email). Ignored when
+  # weekly_enabled is false.
+  send_empty_weekly: true
 
 scoring:
   weights:

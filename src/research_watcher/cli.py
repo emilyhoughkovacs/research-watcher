@@ -186,6 +186,13 @@ def cmd_daily(args) -> int:
 
 def cmd_weekly(args) -> int:
     profile, state, base = _setup(args)
+
+    # The Friday pick is optional. Checked before any credential lookup or
+    # network call so that disabling it costs nothing and can't fail.
+    if not profile.get("email", {}).get("weekly_enabled", True):
+        log.info("weekly pick disabled in profile (email.weekly_enabled: false)")
+        return 0
+
     api_key = _require("ANTHROPIC_API_KEY")
     address = _require("GMAIL_ADDRESS")
     app_pw = _require("GMAIL_APP_PASSWORD")
