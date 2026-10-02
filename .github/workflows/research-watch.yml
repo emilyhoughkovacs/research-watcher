@@ -29,9 +29,12 @@ on:
         type: boolean
         default: false
       days:
-        description: "pick: archive window to grade"
-        type: number
-        default: 7
+        # A string, not a number: workflow_dispatch delivers every non-boolean
+        # input as a string, and a number-typed input here rejects it before
+        # the job starts. The CLI parses it as an int.
+        description: "pick: archive window to grade, in days"
+        type: string
+        default: "7"
       tool_repository:
         description: "Where to install research-watcher from — a fork, if you run one"
         type: string

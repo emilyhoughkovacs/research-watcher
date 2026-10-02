@@ -33,7 +33,7 @@ jobs:
     with:
       command: pick
       dry_run: ${{ inputs.dry_run == true }}
-      days: ${{ inputs.days || 7 }}
+      days: ${{ inputs.days || '7' }}   # a string either way: dispatch sends one
       profile: profile.yaml
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
