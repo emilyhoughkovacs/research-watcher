@@ -76,7 +76,16 @@ jobs:
           git config user.name  "research-watcher"
           git config user.email "actions@github.com"
           # Match these to the output: block in your profile.yaml.
-          git add out 2>/dev/null || true
+          #
+          # Stage only paths that exist. A missing pathspec makes `git add`
+          # abort the WHOLE add (exit 128), and a guides dir doesn't exist
+          # until the first guide is written — git doesn't track empty dirs.
+          # Never append `2>/dev/null || true` here: the step then reports
+          # success while nothing is committed, state never persists, and
+          # every run re-sends everything since the last good commit.
+          for p in out; do
+            if [ -e "$p" ]; then git add -A -- "$p"; fi
+          done
           if git diff --staged --quiet; then
             echo "nothing new to commit"
           else

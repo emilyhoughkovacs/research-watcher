@@ -70,7 +70,11 @@ jobs:
           git config user.name  "research-watcher"
           git config user.email "actions@github.com"
           # Match these to the output: block in your profile.yaml.
-          git add out 2>/dev/null || true
+          # Stage only paths that exist, and don't suppress errors — see the
+          # digest workflow for why.
+          for p in out; do
+            if [ -e "$p" ]; then git add -A -- "$p"; fi
+          done
           if git diff --staged --quiet; then
             echo "no guide produced this cycle"
           else
