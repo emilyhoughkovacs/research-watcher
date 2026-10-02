@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import date, datetime
+from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
 import feedparser
@@ -33,7 +34,7 @@ SUSPICIOUS_ZERO_THRESHOLD = 3
 
 
 def load_sources(path) -> tuple[dict, list[dict]]:
-    with open(path) as f:
+    with open(Path(path).expanduser()) as f:
         cfg = yaml.safe_load(f)
     defaults = cfg.get("defaults", {}) or {}
     sources = [s for s in cfg.get("sources", []) if s.get("enabled", True)]

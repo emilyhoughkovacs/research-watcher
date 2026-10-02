@@ -1,0 +1,139 @@
+name: research-watch (reusable)
+
+# Called from a data repo's stub workflow; never runs on its own here. All
+# of *how* a run works lives in this file, so a fix ships once. The caller
+# keeps *when* (its schedule) and *with what* (profile path, secrets) — see
+# workflows.example/ for the stubs.
+#
+# Inside a called workflow the `github` context is the caller's: the first
+# checkout below is the data repo, and the commit goes back to it using the
+# caller's GITHUB_TOKEN (the caller must grant `contents: write`).
+
+on:
+  workflow_call:
+    inputs:
+      command:
+        description: "digest | pick | baseline | check | costs"
+        type: string
+        default: digest
+      profile:
+        description: "Profile path in the data repo. Must be committed — CI can't read an ignored file."
+        type: string
+        default: profile.yaml
+      base_dir:
+        description: "Output paths in the profile resolve against this"
+        type: string
+        default: "."
+      dry_run:
+        description: "digest/pick: print the email instead of sending. Saves and commits nothing."
+        type: boolean
+        default: false
+      days:
+        description: "pick: archive window to grade"
+        type: number
+        default: 7
+      tool_repository:
+        description: "Where to install research-watcher from — a fork, if you run one"
+        type: string
+        default: emilyhoughkovacs/research-watcher
+      tool_ref:
+        # A called workflow has no context for its own ref, so the version
+        # to install is explicit. Keep it matched to the @ref in `uses:`.
+        description: "research-watcher ref to install"
+        type: string
+        default: main
+    secrets:
+      # Not required: check, costs and baseline don't use them, and the CLI
+      # fails with a clear message when digest/pick run without them.
+      ANTHROPIC_API_KEY:
+        required: false
+      GMAIL_ADDRESS:
+        required: false
+      GMAIL_APP_PASSWORD:
+        required: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30      # pick's guide generation re-reads a paper in full
+    defaults:
+      run:
+        shell: bash          # -eo pipefail, so a failed `research-watch paths` fails the step
+    env:
+      # Inputs reach scripts through env, never interpolated into the
+      # script text, so a stray value can't inject shell.
+      COMMAND: ${{ inputs.command }}
+      PROFILE: ${{ inputs.profile }}
+      BASE_DIR: ${{ inputs.base_dir }}
+      DRY_RUN: ${{ inputs.dry_run }}
+      DAYS: ${{ inputs.days }}
+    steps:
+      - name: Check out the data repo
+        uses: actions/checkout@v4
+
+      - name: Check out research-watcher
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.tool_repository }}
+          ref: ${{ inputs.tool_ref }}
+          path: .tool
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install --quiet ./.tool
+
+      - name: Run
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: |
+          case "$COMMAND" in
+            digest|pick|baseline|check|costs) ;;
+            *) echo "::error::unknown command '$COMMAND'"; exit 1 ;;
+          esac
+          args=("$COMMAND")
+          if [[ "$DRY_RUN" == "true" && "$COMMAND" =~ ^(digest|pick)$ ]]; then
+            args+=(--dry-run)
+          fi
+          if [[ "$COMMAND" == "pick" ]]; then args+=(--days "$DAYS"); fi
+          research-watch \
+            --sources .tool/sources.yaml \
+            --profile "$PROFILE" \
+            --base-dir "$BASE_DIR" \
+            --env /nonexistent \
+            "${args[@]}"
+
+      - name: Commit outputs back to the data repo
+        # Dry runs save no state; committing their archive files would put
+        # items in the pick's window that the digest never marked seen.
+        if: ${{ !inputs.dry_run && contains(fromJSON('["digest","pick","baseline"]'), inputs.command) }}
+        run: |
+          git config user.name  "research-watcher"
+          git config user.email "actions@github.com"
+          # The profile's output paths, from the profile itself — the
+          # workflow keeps no list of its own to drift out of sync.
+          paths="$(research-watch --profile "$PROFILE" --base-dir "$BASE_DIR" paths)"
+          echo "$paths"
+          # Stage only paths that exist. A missing pathspec makes `git add`
+          # abort the WHOLE add (exit 128), and a guides dir doesn't exist
+          # until the first guide is written. Never append
+          # `2>/dev/null || true`: the step then reports success while
+          # nothing is committed, state never persists, and every run
+          # re-sends everything since the last good commit (Jul-Oct 2026).
+          while IFS= read -r p; do
+            if [ -e "$p" ]; then git add -A -- "$p"; fi
+          done <<< "$paths"
+          if git diff --staged --quiet; then
+            echo "nothing new to commit"
+          else
+            git commit -m "research-watch: $COMMAND $(date -u +%Y-%m-%d)"
+            # Another run may have landed while this one worked. The ref is
+            # the caller's (its default branch on a scheduled run).
+            git pull --rebase --autostash origin "$GITHUB_REF_NAME"
+            git push origin "HEAD:$GITHUB_REF_NAME"
+          fi

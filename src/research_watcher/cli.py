@@ -7,6 +7,14 @@
                             No new items, no email.
   research-watch pick       grade the window, pick one, write the guide, send.
   research-watch costs      what runs have cost, month to date, projection.
+  research-watch paths      the profile's output paths, one per line (CI
+                            commits exactly these).
+
+Defaults for --sources, --profile, --base-dir and --env can come from
+RESEARCH_WATCH_SOURCES, RESEARCH_WATCH_PROFILE, RESEARCH_WATCH_BASE_DIR and
+RESEARCH_WATCH_ENV, so read-only commands work from any directory. Commands
+that write state (digest, pick, baseline) ignore RESEARCH_WATCH_BASE_DIR
+unless --dry-run: when CI owns the state, a local write diverges from it.
 
 `digest` runs at whatever cadence you schedule it — daily, weekly, or
 monthly. The mechanics are identical either way (poll, diff against state,
@@ -63,6 +71,26 @@ DEFAULT_GUIDES = "out/guides"
 DEFAULT_STATE = "out/state.json"
 
 
+# Commands that write state. With the data repo's state owned by CI, a
+# local write makes a second history that collides with CI's next commit.
+WRITES_STATE = {"digest", "daily", "pick", "weekly", "baseline"}
+
+
+def _base_dir(args) -> Path:
+    if args.base_dir is not None:
+        return Path(args.base_dir).expanduser()
+    from_env = os.environ.get("RESEARCH_WATCH_BASE_DIR")
+    if from_env and args.cmd in WRITES_STATE and not getattr(args, "dry_run", False):
+        sys.exit(
+            f"error: refusing to write state under RESEARCH_WATCH_BASE_DIR ({from_env}).\n"
+            "  That's for read-only commands. If CI owns that state, a local write\n"
+            "  diverges from it and the next CI commit conflicts.\n\n"
+            "  Preview instead:          add --dry-run\n"
+            "  Write there deliberately: pass --base-dir explicitly"
+        )
+    return Path(from_env or ".").expanduser()
+
+
 def _setup(args) -> tuple[dict, State, Path]:
     # Explicit path: find_dotenv() walks the call stack and fails when the
     # entry point isn't a real file (stdin, some CI shims).
@@ -75,9 +103,9 @@ def _setup(args) -> tuple[dict, State, Path]:
         format="%(levelname)-7s %(message)s",
     )
 
-    profile = summarize.load_profile(args.profile)
+    profile = summarize.load_profile(Path(args.profile).expanduser())
     out = profile.get("output", {})
-    base = Path(args.base_dir).expanduser()
+    base = _base_dir(args)
     if not base.is_dir():
         sys.exit(
             f"error: --base-dir {base} does not exist.\n"
@@ -403,6 +431,25 @@ def cmd_pick(args) -> int:
     return 0
 
 
+def cmd_paths(args) -> int:
+    """Print the profile's output paths, resolved against the base dir.
+
+    The CI commit step stages exactly these. Before this, the workflow held
+    its own list of paths — a second copy of the profile's output block
+    that could drift from it.
+    """
+    profile = summarize.load_profile(Path(args.profile).expanduser())
+    out = profile.get("output", {}) or {}
+    base = _base_dir(args)
+    for key, default in (
+        ("archive_dir", DEFAULT_ARCHIVE),
+        ("guides_dir", DEFAULT_GUIDES),
+        ("state_file", DEFAULT_STATE),
+    ):
+        print(base / out.get(key, default))
+    return 0
+
+
 def cmd_costs(args) -> int:
     """Per-run spend from the ledger, month to date, and a 30-day projection."""
     profile, state, _ = _setup(args)
@@ -482,10 +529,25 @@ def _load_window(archive_dir: Path, days: int):
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="research-watch", description=__doc__)
-    p.add_argument("--sources", default="sources.yaml")
-    p.add_argument("--profile", default="profile.yaml")
-    p.add_argument("--base-dir", default=".", help="root for archive/guides/state paths")
-    p.add_argument("--env", default=".env")
+    env = os.environ.get
+    p.add_argument(
+        "--sources", default=env("RESEARCH_WATCH_SOURCES", "sources.yaml"),
+        help="default: $RESEARCH_WATCH_SOURCES or ./sources.yaml",
+    )
+    p.add_argument(
+        "--profile", default=env("RESEARCH_WATCH_PROFILE", "profile.yaml"),
+        help="default: $RESEARCH_WATCH_PROFILE or ./profile.yaml",
+    )
+    # None, not ".": _base_dir needs to know whether this was passed.
+    p.add_argument(
+        "--base-dir", default=None,
+        help="root for archive/guides/state paths. default: $RESEARCH_WATCH_BASE_DIR "
+        "(read-only commands and --dry-run only) or .",
+    )
+    p.add_argument(
+        "--env", default=env("RESEARCH_WATCH_ENV", ".env"),
+        help="default: $RESEARCH_WATCH_ENV or ./.env",
+    )
     p.add_argument("-v", "--verbose", action="store_true")
 
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -517,6 +579,10 @@ def main(argv=None) -> int:
     w.add_argument("--dry-run", action="store_true", help="print the email instead of sending")
     w.add_argument("--days", type=int, default=7, help="archive window to grade")
     w.set_defaults(func=cmd_pick)
+
+    sub.add_parser(
+        "paths", help="the profile's output paths, one per line"
+    ).set_defaults(func=cmd_paths)
 
     c = sub.add_parser("costs", help="spend per run, month to date, 30-day projection")
     c.add_argument("--cadence", choices=CADENCES, help="for the projection")

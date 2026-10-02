@@ -1,13 +1,14 @@
 name: Research Watch — repro pick
 
+# A stub, like the digest's: schedule and inputs here, everything else in
+# research-watcher's reusable workflow.
+#
+# The pick grades what the digest archived, so don't run it more often than
+# the digest, and keep `days` >= the gap between digest runs.
+
 on:
   schedule:
-    # Fridays 15:17 UTC (08:17 PT summer / 07:17 winter). Runs BEFORE the
-    # digest so the pick lands at the top of the inbox, not under it.
-    #
-    # The pick grades what the digest archived, so don't run it more often
-    # than the digest, and keep `days` >= the gap between digest runs.
-    - cron: "17 15 * * 5"
+    - cron: "17 15 * * 5"    # Fridays, UTC. Queued like any GitHub schedule.
   workflow_dispatch:
     inputs:
       dry_run:
@@ -16,7 +17,8 @@ on:
         default: false
       days:
         description: "How many days of archive to consider"
-        default: "7"
+        type: number
+        default: 7
 
 permissions:
   contents: write
@@ -27,58 +29,13 @@ concurrency:
 
 jobs:
   run:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30      # guide generation re-reads the paper in full
-    steps:
-      # Your repo — where the archive, guides and state get committed.
-      - name: Check out this repo
-        uses: actions/checkout@v4
-
-      - name: Check out the research-watcher tool
-        uses: actions/checkout@v4
-        with:
-          repository: emilyhoughkovacs/research-watcher
-          path: .tool
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Install
-        run: pip install --quiet ./.tool
-
-      - name: Grade the window and write the guide
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-        # profile.yaml must be COMMITTED to this repo for CI to read it.
-        # It holds no secrets; those are the three above.
-        run: |
-          research-watch \
-            --sources .tool/sources.yaml \
-            --profile profile.yaml \
-            --base-dir . \
-            --env /nonexistent \
-            pick \
-            --days ${{ github.event.inputs.days || 7 }} \
-            ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}
-
-      - name: Commit the guide
-        run: |
-          git config user.name  "research-watcher"
-          git config user.email "actions@github.com"
-          # Match these to the output: block in your profile.yaml.
-          # Stage only paths that exist, and don't suppress errors — see the
-          # digest workflow for why.
-          for p in out; do
-            if [ -e "$p" ]; then git add -A -- "$p"; fi
-          done
-          if git diff --staged --quiet; then
-            echo "no guide produced this cycle"
-          else
-            git commit -m "research-watch: repro pick $(date -u +%Y-%m-%d)"
-            git pull --rebase --autostash origin main
-            git push
-          fi
+    uses: emilyhoughkovacs/research-watcher/.github/workflows/research-watch.yml@main
+    with:
+      command: pick
+      dry_run: ${{ inputs.dry_run == true }}
+      days: ${{ inputs.days || 7 }}
+      profile: profile.yaml
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+      GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}

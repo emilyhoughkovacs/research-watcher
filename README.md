@@ -283,6 +283,23 @@ Add `--dry-run` to `digest` or `pick` to print the email instead of
 sending. A dry run doesn't save state, so the items it previews stay new
 for the real run.
 
+**Running against a data repo from anywhere.** If your profile and state
+live in another repo (see [Schedule](#schedule)), point the defaults at it
+once, in your shell profile:
+
+```bash
+export RESEARCH_WATCH_SOURCES=~/research-watcher/sources.yaml
+export RESEARCH_WATCH_PROFILE=~/my-notes/profile.yaml
+export RESEARCH_WATCH_BASE_DIR=~/my-notes
+export RESEARCH_WATCH_ENV=~/research-watcher/.env
+```
+
+Then `research-watch costs`, `check` and `paths` work from any directory.
+Commands that write state (`digest`, `pick`, `baseline`) refuse to use
+`RESEARCH_WATCH_BASE_DIR` unless `--dry-run` is set. When CI owns that state,
+a local write creates a second history that conflicts with CI's next
+commit. To write there deliberately, pass `--base-dir` explicitly.
+
 ## Commands
 
 | Command | Cost | Description |
@@ -292,6 +309,7 @@ for the real run.
 | `digest` | $0.20-0.75/run | Sweep, summarize new items, archive, send if anything is new |
 | `pick` | ~$0.50 | Pick one paper, write repro guide, send |
 | `costs` | free | Spend per run, month to date, 30-day projection |
+| `paths` | free | The profile's output paths, one per line (what CI commits) |
 
 `daily` and `weekly` still work as aliases for `digest` and `pick`.
 
@@ -304,8 +322,16 @@ overnight.
 
 ## Schedule
 
-Copy from `workflows.example/` into the repo you want output committed to,
-then set the same three credentials as secrets:
+Scheduling is split in two. The tool repo holds one reusable workflow,
+`.github/workflows/research-watch.yml`, with everything about *how* a run
+works: install, run, commit the archive and state back. Your repo holds two
+short stubs that say *when* to run and *with what* profile. Fixes to the
+run logic ship from here, and your stubs don't change.
+
+Copy the two stubs from `workflows.example/` into `.github/workflows/` of
+the repo that should hold your profile, state and archive. Commit your
+`profile.yaml` there too: CI can't read an ignored file. Then set the
+three credentials as secrets:
 
 ```bash
 gh secret set ANTHROPIC_API_KEY  -R <owner>/<repo>
@@ -316,6 +342,11 @@ gh secret set GMAIL_APP_PASSWORD -R <owner>/<repo>
 `gh secret set` reads stdin when `--body` is omitted. Pass `-R` explicitly
 if the repo has multiple remotes.
 
+The commit step stages exactly the paths `research-watch paths` prints
+from your profile's `output:` block, so there's no list to keep in sync.
+Stubs track `@main`; pin `uses:` and `tool_ref:` to a tag if you'd rather
+upgrade deliberately.
+
 Defaults: digest at 15:47 UTC daily, pick on Fridays at 15:17 UTC. For a
 different cadence, change the cron and set `schedule.cadence` to match:
 
@@ -325,8 +356,8 @@ different cadence, change the cron and set `schedule.cadence` to match:
 - cron: "47 15 1 * *"    # monthly, the 1st
 ```
 
-GitHub cron is UTC-only, so local time shifts with DST, and can drift 10-30
-minutes under load.
+Cron times are UTC. GitHub Actions queues scheduled runs, so the cron time
+is when a run is requested, not when the email arrives.
 
 The pick reads what the digest archived, so don't schedule it more often
 than the digest, and keep its `--days` at least as long as the gap between

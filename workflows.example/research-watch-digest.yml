@@ -1,32 +1,34 @@
 name: Research Watch — digest
 
+# A stub: *when* to run and *with what*. How a run works — install, run,
+# commit back — lives in research-watcher's reusable workflow, so fixes
+# there need no edit here.
+#
+# Copy into .github/workflows/ of the repo that should hold your profile,
+# state and archive, then set three secrets (see the README).
+
 on:
   schedule:
     # Pick ONE and set schedule.cadence in profile.yaml to match.
-    #
     #   daily     "47 15 * * *"
     #   weekly    "47 15 * * 1"    Mondays
     #   monthly   "47 15 1 * *"    the 1st
-    #
-    # 15:47 UTC. Off-the-hour deliberately: every user who asks for "9am"
-    # gets minute 0, so the scheduler is busiest there and drifts most.
-    # GitHub cron is UTC-only, so this is 08:47 PT in summer and 07:47 in
-    # winter. Harmless for a digest; noted so the shift isn't a surprise.
+    # UTC. GitHub queues scheduled runs, so the email arrives later than this.
     - cron: "47 15 * * *"
   workflow_dispatch:
     inputs:
-      dry_run:
-        description: "Print the email instead of sending it"
-        type: boolean
-        default: false
       mode:
         description: "digest = normal run; baseline = mark all as seen; check = parse sources only; costs = spend report"
         type: choice
         options: [digest, baseline, check, costs]
         default: digest
+      dry_run:
+        description: "Print the email instead of sending it (digest only)"
+        type: boolean
+        default: false
 
 permissions:
-  contents: write        # to commit the archive and state file back
+  contents: write        # the reusable workflow commits state and archive back
 
 concurrency:
   group: research-watch
@@ -34,63 +36,14 @@ concurrency:
 
 jobs:
   run:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      # Your repo — where the archive, guides and state get committed.
-      - name: Check out this repo
-        uses: actions/checkout@v4
-
-      - name: Check out the research-watcher tool
-        uses: actions/checkout@v4
-        with:
-          repository: emilyhoughkovacs/research-watcher
-          path: .tool
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Install
-        run: pip install --quiet ./.tool
-
-      - name: Run
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-        # profile.yaml must be COMMITTED to this repo for CI to read it.
-        # It holds no secrets; those are the three above.
-        run: |
-          research-watch \
-            --sources .tool/sources.yaml \
-            --profile profile.yaml \
-            --base-dir . \
-            --env /nonexistent \
-            ${{ github.event.inputs.mode || 'digest' }} \
-            ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}
-
-      - name: Commit archive and state
-        run: |
-          git config user.name  "research-watcher"
-          git config user.email "actions@github.com"
-          # Match these to the output: block in your profile.yaml.
-          #
-          # Stage only paths that exist. A missing pathspec makes `git add`
-          # abort the WHOLE add (exit 128), and a guides dir doesn't exist
-          # until the first guide is written — git doesn't track empty dirs.
-          # Never append `2>/dev/null || true` here: the step then reports
-          # success while nothing is committed, state never persists, and
-          # every run re-sends everything since the last good commit.
-          for p in out; do
-            if [ -e "$p" ]; then git add -A -- "$p"; fi
-          done
-          if git diff --staged --quiet; then
-            echo "nothing new to commit"
-          else
-            git commit -m "research-watch: digest $(date -u +%Y-%m-%d)"
-            # Another run may have landed while this one worked.
-            git pull --rebase --autostash origin main
-            git push
-          fi
+    uses: emilyhoughkovacs/research-watcher/.github/workflows/research-watch.yml@main
+    with:
+      command: ${{ inputs.mode || 'digest' }}   # inputs are empty on scheduled runs
+      dry_run: ${{ inputs.dry_run == true }}
+      profile: profile.yaml                     # must be committed: CI can't read ignored files
+    secrets:
+      # Explicit, not `secrets: inherit`: GitHub documents inherit only for
+      # callers in the same organization.
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+      GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
