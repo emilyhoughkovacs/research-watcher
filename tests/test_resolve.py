@@ -1,4 +1,4 @@
-"""Resolver: offline matcher tests, plus a network fixture test (spec D.2).
+"""Resolver: offline matcher tests, plus network fixtures against known pages.
 
 Run the network cases with:  pytest -m network
 """

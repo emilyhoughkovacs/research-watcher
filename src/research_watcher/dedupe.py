@@ -1,6 +1,6 @@
 """Deciding what counts as new.
 
-Three layers, each of which can only exclude (spec A):
+Three layers, each of which can only exclude:
 
   1. `seen` keys — the record of what's been reported. Exact `source:id`.
   2. Content fingerprints — the same work arriving from a second source

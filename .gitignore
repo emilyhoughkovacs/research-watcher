@@ -36,3 +36,6 @@ build/
 .DS_Store
 .vscode/
 .idea/
+
+# Specs are local working docs, not repo content
+specs/

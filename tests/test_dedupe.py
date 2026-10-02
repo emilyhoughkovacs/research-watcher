@@ -45,7 +45,7 @@ def test_seen_key_is_excluded(tmp_path, today):
 
 
 def test_crosspost_on_a_later_day_is_a_duplicate(tmp_path, today):
-    """Spec success criterion 3: one digest, not two."""
+    """A crosspost arriving a day after the original is not reported again."""
     state = State(tmp_path / "s.json")
     original = make_item("redwood", "continual", CROSSPOST, today - timedelta(days=1))
     state.mark_seen(original.key, original.title, original.published, url=original.url,

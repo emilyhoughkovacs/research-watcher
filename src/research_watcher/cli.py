@@ -305,7 +305,7 @@ def cmd_digest(args) -> int:
 
     # The rule: an email goes out only when there's something new. Not for
     # "nothing new", and not just for warnings — those ride along with the
-    # next digest (spec, Decisions).
+    # next digest.
     if not items:
         log.info("no new items — no email")
         if args.dry_run:

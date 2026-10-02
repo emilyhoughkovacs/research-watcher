@@ -253,7 +253,11 @@ def _surnames(names: list[str]) -> set[str]:
 def match(
     cand_title: str, cand_authors: list[str], page_titles: list[str], page_authors: list[str]
 ) -> str:
-    """'yes' | 'no' | 'ambiguous'. Thresholds are spec D.2."""
+    """'yes' | 'no' | 'ambiguous'.
+
+    Thresholds lean strict — summarizing the wrong paper is worse than
+    skipping the right one — and 'ambiguous' goes to an LLM check.
+    """
     best_j = max((title_similarity(cand_title, t) for t in page_titles), default=0.0)
     prefix = any(is_title_prefix(cand_title, t) for t in page_titles)
     authors_overlap = bool(_surnames(cand_authors) & _surnames(page_authors))

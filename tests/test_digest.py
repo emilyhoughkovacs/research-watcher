@@ -1,7 +1,7 @@
 """cmd_digest end to end, with fetch, Claude and SMTP stubbed.
 
-Covers the spec's behavioral success criteria: one email per day that has
-new items and none otherwise, crossposts reported once, and the stale-state
+Covers the behavioral guarantees: one email per day that has new items
+and none otherwise, crossposts reported once, and the stale-state
 alarm plus date floor when state stops persisting.
 """
 
@@ -68,7 +68,7 @@ def today():
 
 
 def test_one_email_per_day_with_new_items_none_otherwise(env):
-    """Spec success criterion 1, and the 'no new news, no email' rule."""
+    """One email per day with new items; nothing on a day without."""
     a = make_item("redwood", "a", "A genuinely new post about monitoring", today())
     env.run(a)
     assert len(env.sent) == 1
@@ -91,14 +91,14 @@ def test_failing_source_alone_sends_nothing(env, monkeypatch):
 
 
 def test_crosspost_reported_once(env):
-    """Spec success criterion 3: Redwood today, its AF crosspost tomorrow."""
+    """Redwood today, its AF crosspost tomorrow: one digest, not two."""
     env.run(make_item("redwood-research", "continual", CROSSPOST, today()))
     env.run(make_item("alignment-forum", "QnDq", CROSSPOST, today(), aggregator=True))
     assert len(env.sent) == 1
 
 
 def test_stale_state_alarm_and_floor(env):
-    """Spec success criterion 4: frozen last_run → ⚠ in the email; floor holds."""
+    """Frozen last_run → ⚠ in the email, and the date floor still holds."""
     env.state_path.parent.mkdir(parents=True)
     env.state_path.write_text(json.dumps({
         "last_run": (datetime.now(UTC) - timedelta(days=60)).isoformat(),
