@@ -13,6 +13,14 @@ watch-profile.yaml
 out/
 guides/
 
+# Data files — keep locally only
+data/
+*.csv
+*.parquet
+*.pkl
+*.joblib
+.ipynb_checkpoints/
+
 # Python
 __pycache__/
 *.py[cod]
