@@ -20,9 +20,9 @@ on:
         type: boolean
         default: false
       mode:
-        description: "digest = normal run; baseline = mark all as seen, no cost"
+        description: "digest = normal run; baseline = mark all as seen; check = parse sources only; costs = spend report"
         type: choice
-        options: [digest, baseline]
+        options: [digest, baseline, check, costs]
         default: digest
 
 permissions:

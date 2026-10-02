@@ -22,6 +22,20 @@ schedule:
   # Defaults by cadence: daily 25, weekly 60, monthly 150.
   # sanity_cap: 40
 
+  # Backstop against re-sends: an unseen item older than this many days is
+  # skipped, not reported. Catches the cases the seen-list can't — state not
+  # persisting, or a source changing how it keys items. Unknown dates pass.
+  # Defaults by cadence: daily 4, weekly 10, monthly 35. (News-sweep hits
+  # use 30 regardless: press coverage lags the paper by days to weeks.)
+  # date_floor_days: 4
+
+budget:
+  # Monthly spend cap, list price. When month-to-date plus a run's expected
+  # cost would cross it, the optional search stages (news sweep, reach pass)
+  # are skipped for that run and the footer says so. Summarization always
+  # runs. `research-watch costs` shows spend so far and a projection.
+  monthly_cap_usd: 20
+
 identity:
   name: Your Name
   email: you@example.com
@@ -104,15 +118,27 @@ output:
   state_file: out/state.json
 
 email:
-  # Suppress the digest when a run finds nothing new. Failing sources are
-  # still reported either way — silence and a dead scraper look identical
-  # from the inbox otherwise.
-  suppress_empty: true
+  # No new items, no email — that's fixed, not configurable. Failing
+  # sources and the stale-state warning ride along with the next digest
+  # that has something in it.
 
   # How many items get the expanded treatment; the rest get one-line
   # headlines. Comment out to take the cadence default: 3 daily, 5 weekly,
   # 8 monthly.
   # top_n: 3
+
+  # News sweep: web search for AI safety research that got press or broad
+  # attention, resolved to the paper itself. Catches work from outside the
+  # configured sources. ~$0.50 per sweep, the largest single cost.
+  sweep_enabled: true
+  # Sweep every N runs' worth of days. 2 halves the sweep's cost; the
+  # window stretches to cover the gap, so nothing is skipped, just found a
+  # day later.
+  sweep_every_days: 1
+
+  # Reach pass: web search for coverage of the top few items, which can
+  # move them up the ranking. ~$0.13 each. Defaults to top_n.
+  # reach_top_k: 3
 
   # The repro pick is optional. Set false for the digest only.
   pick_enabled: true

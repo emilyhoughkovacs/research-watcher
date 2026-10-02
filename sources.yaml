@@ -1,11 +1,14 @@
 # Source list for research-watcher.
 #
 # Committed and shareable — this list is half the value of the tool.
-# All feeds verified HTTP 200 on 2026-07-28.
+# All sources verified to PARSE (not just respond) on 2026-10-02.
 #
 # kind: rss | anthropic_team | card_index | link_prefix
-# tier: 1 = core, 2 = broader safety orgs (disable to cut volume)
+# tier: 1 = frontier labs, 2 = broader safety orgs (disable to cut volume)
 # section: which email section items land in (top / also / alignment_blog)
+# aggregator: true for sites that mostly crosspost others' work (Alignment
+#   Forum). When the same research arrives from an aggregator and from its
+#   original publisher, the original wins.
 #
 # NOTE ON "VERIFIED": an HTTP 200 does NOT mean a feed exists. Both
 # alignment.anthropic.com/feed.xml and safe.ai/blog?format=rss return 200
@@ -19,7 +22,7 @@ defaults:
   user_agent: "research-watcher/0.1 (+https://github.com/emilyhoughkovacs/research-watcher)"
 
 sources:
-  # ── Tier 1: Anthropic research teams ────────────────────────────────
+  # ── Tier 1: Frontier labs — Anthropic research teams ────────────────────────────────
   # Team pages are server-rendered; every item on a team page belongs to
   # that team, so `area` comes from config rather than being parsed.
   # Economic Research is deliberately excluded.
@@ -87,6 +90,17 @@ sources:
     # at any path. Index is server-rendered: <a class="note" href="YYYY/slug/">
     # wrapping an <h3> and a .description.
 
+  - id: openai-alignment
+    kind: rss
+    tier: 1
+    enabled: true
+    url: https://alignment.openai.com/rss.xml
+    display: "OpenAI Alignment"
+    area: alignment
+    section: top
+    grade_repro: true
+    # /feed.xml 404s; /rss.xml is the real feed.
+
   - id: transformer-circuits
     kind: card_index
     tier: 1
@@ -105,14 +119,31 @@ sources:
   # CAIS and Alignment Forum are the widest / least targeted.
 
   - id: redwood-research
-    kind: rss
+    kind: link_prefix
     tier: 2
     enabled: true
-    url: https://redwoodresearch.substack.com/feed
+    url: https://www.redwoodresearch.org/blog
+    link_prefix: "/blog/"
     display: "Redwood Research"
     area: alignment
     section: also
     grade_repro: true
+    # Was the Substack feed (redwoodresearch.substack.com/feed, which now
+    # redirects to blog.redwoodresearch.org/feed). Substack answers GitHub
+    # Actions runners with 403 while serving the same URL fine elsewhere;
+    # the org's own site carries the same posts and isn't behind Substack.
+
+  - id: metr
+    kind: rss
+    tier: 2
+    enabled: true
+    url: https://metr.org/feed.xml
+    display: "METR"
+    area: evals
+    section: also
+    grade_repro: true
+    # Covers /blog and /notes. Includes non-research posts (testimony,
+    # org updates); those score low on impact rather than being filtered.
 
   - id: deepmind-safety
     kind: rss
@@ -125,14 +156,44 @@ sources:
     grade_repro: true
 
   - id: eleuther
-    kind: rss
+    kind: link_prefix
     tier: 2
     enabled: true
-    url: https://blog.eleuther.ai/index.xml
+    url: https://blog.eleuther.ai/
+    link_prefix: "/"
+    require_date: true
     display: "EleutherAI"
     area: interpretability
     section: also
     grade_repro: true
+    # index.xml started returning 404 in 2026-09; no feed at any path.
+
+  - id: uk-aisi
+    kind: link_prefix
+    tier: 2
+    enabled: true
+    url: https://www.aisi.gov.uk/blog
+    link_prefix: "/blog/"
+    display: "UK AISI"
+    area: evals
+    section: also
+    grade_repro: false
+    # /blog rather than /research: the blog carries incident reports and
+    # announces most /research papers, so taking both would double-list.
+
+  - id: transluce
+    kind: link_prefix
+    tier: 2
+    enabled: true
+    url: https://transluce.org/news
+    link_prefix: "/"
+    nested: true          # Docent blog posts live at /docent/blog/<slug>
+    require_date: true    # drops nav links, which share the "/" prefix
+    display: "Transluce"
+    area: interpretability
+    section: also
+    grade_repro: true
+    # Next.js, but /news is server-rendered: one dated card per post.
 
   - id: cais
     kind: link_prefix
@@ -158,11 +219,11 @@ sources:
     area: alignment
     section: also
     grade_repro: true
+    aggregator: true      # Redwood and Anthropic posts are crossposted here
 
   # ── Known gaps (no RSS; each needs a bespoke scraper) ───────────────
-  # METR, Apollo Research, Transluce, Goodfire, UK AISI all 404 on every
-  # feed path tried on 2026-07-28. Apollo and METR are the painful
-  # omissions if you follow evals work.
+  # Apollo Research and Goodfire. Apollo is the painful omission if you
+  # follow evals work.
   #
   # Deferred, not forgotten:
   # - arxiv (export.arxiv.org/api/query) — needs aggressive filtering

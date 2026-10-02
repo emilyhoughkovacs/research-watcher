@@ -4,7 +4,9 @@
   research-watch baseline   mark everything currently published as seen.
                             No LLM, no email, no cost. Run this ONCE first.
   research-watch digest     summarize new items, archive, send the digest.
+                            No new items, no email.
   research-watch pick       grade the window, pick one, write the guide, send.
+  research-watch costs      what runs have cost, month to date, projection.
 
 `digest` runs at whatever cadence you schedule it — daily, weekly, or
 monthly. The mechanics are identical either way (poll, diff against state,
@@ -24,16 +26,18 @@ import argparse
 import logging
 import os
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import requests
 from anthropic import Anthropic
 from dotenv import load_dotenv
 
+from . import costs, dedupe, summarize
 from . import email as mailer
 from . import pick as pick_mod
-from . import summarize
-from .fetch import fetch_all, new_items
+from . import sweep as sweep_mod
+from .fetch import fetch_all
 from .state import State
 
 log = logging.getLogger("research_watcher")
@@ -151,9 +155,7 @@ def cmd_baseline(args) -> int:
             continue
         for item in r.items:
             if state.is_new(item.key):
-                state.mark_seen(
-                    item.key, item.title, item.published.isoformat() if item.published else None
-                )
+                state.mark_seen(item.key, item.title, item.published, url=item.url)
                 marked += 1
 
     state.save()
@@ -172,40 +174,58 @@ def cmd_digest(args) -> int:
     out = profile.get("output", {})
     archive_dir = base / out.get("archive_dir", DEFAULT_ARCHIVE)
     email_cfg = profile.get("email", {})
-    # suppress_empty_daily was the pre-cadence name; still honoured.
-    suppress_empty = email_cfg.get(
-        "suppress_empty", email_cfg.get("suppress_empty_daily", True)
-    )
+    schedule = profile.get("schedule", {})
+    today = datetime.now(UTC).date()
+    floor_days = schedule.get("date_floor_days") or dedupe.DATE_FLOOR_DAYS[cadence]
+
+    # Read before this run overwrites last_run: a frozen last_run is how a
+    # run finds out that the previous ones never got committed.
+    stale_since = state.stale_since(cadence)
+
+    ledger = costs.Ledger()
+    cap = float(profile.get("budget", {}).get("monthly_cap_usd", costs.DEFAULT_MONTHLY_CAP))
+    budget = costs.Budget(cap, costs.month_to_date(state.costs, today), ledger)
 
     results = fetch_all(args.sources, state=state)
     for r in results:
         state.record_source(r.source_id, r.ok, r.error)
-
-    items = new_items(results, state)
     failing = state.failing_sources()
 
-    if not items:
-        log.info("no new items")
-        state.save()
-        if failing:
-            # Nothing new, but something is broken — that still warrants mail,
-            # because "quiet" and "the scraper died" look identical from here.
-            subject = f"⚠ [Research Watch] {len(failing)} source(s) failing"
-            body = "No new items, but these sources have been failing:\n\n" + "\n".join(
-                f"  {sid}: {n} consecutive failures" for sid, n in failing
-            )
-            mailer.send(subject, body, address, app_pw)
-        elif not suppress_empty:
-            subject = f"[Research Watch] {cadence.capitalize()} digest — nothing new"
-            body = f"No new items across {len(results)} source(s).\n"
-            mailer.send(subject, body, address, app_pw)
-        return 0
+    sel = dedupe.select_new(results, state, today, floor_days)
+    items = sel.new
+    notes = mailer.DigestNotes(
+        too_old=len(sel.too_old), duplicates=len(sel.duplicates),
+        stale_since=stale_since, cap=cap,
+    )
+    for item, match in sel.duplicates:
+        log.info("duplicate: %s matches %s", item.key, match)
 
-    cap = profile.get("schedule", {}).get("sanity_cap") or SANITY_CAP[cadence]
-    if len(items) > cap and not args.force:
+    client = Anthropic(api_key=api_key)
+    session = requests.Session()
+    session.headers.update({"User-Agent": "research-watcher/0.1"})
+
+    sweep_days = sweep_mod.window(
+        today, state.data.get("last_sweep"), int(email_cfg.get("sweep_every_days", 1))
+    )
+    if (
+        email_cfg.get("sweep_enabled", True)
+        and sweep_days is not None
+        and budget.allows("sweep", costs.ESTIMATE["sweep"])
+    ):
+        try:
+            swept = sweep_mod.run(client, session, state, items, today, ledger, sweep_days)
+            items = items + swept.new
+            notes.unresolved = swept.unresolved
+            notes.too_old += len(swept.too_old)
+            state.data["last_sweep"] = today.isoformat()
+        except Exception as exc:  # noqa: BLE001 — the sweep adds to a digest, never blocks one
+            log.warning("sweep failed: %s", exc)
+
+    cap_items = schedule.get("sanity_cap") or SANITY_CAP[cadence]
+    if len(items) > cap_items and not args.force:
         state.save()
         sys.exit(
-            f"error: {len(items)} new items exceeds the {cadence} sanity cap of {cap}.\n"
+            f"error: {len(items)} new items exceeds the {cadence} sanity cap of {cap_items}.\n"
             "This usually means a parser changed or the state file was reset —\n"
             f"not that {len(items)} papers were published in one {WINDOW[cadence]}.\n\n"
             "  Establish a new waterline:  research-watch baseline\n"
@@ -213,26 +233,76 @@ def cmd_digest(args) -> int:
             "  Or override just this run:  research-watch digest --force"
         )
 
-    client = Anthropic(api_key=api_key)
-    session = requests.Session()
-    session.headers.update({"User-Agent": "research-watcher/0.1"})
     system_prompt = summarize.build_system_prompt(profile)
-
+    summarized = []
     for item in items:
         summarize.fetch_body(item, session)
+        # Some indexes carry no dates (alignment.anthropic.com, safe.ai);
+        # fetch_body backfills one from the page, so the floor gets a
+        # second look before any tokens are spent.
+        floor = sweep_mod.SWEEP_FLOOR_DAYS if item.source_id == "news-sweep" else floor_days
+        if dedupe.too_old(item, today, floor):
+            notes.too_old += 1
+            state.mark_seen(item.key, item.title, item.published, url=item.url)
+            continue
         try:
-            summarize.summarize_item(client, item, system_prompt)
+            summarize.summarize_item(client, item, system_prompt, ledger)
         except Exception as exc:  # noqa: BLE001
             log.warning("summarize failed for %s: %s", item.key, exc)
-        summarize.write_archive(item, archive_dir)
-        state.mark_seen(
-            item.key, item.title, item.published.isoformat() if item.published else None
-        )
+        summarized.append(item)
+    items = summarized
 
+    # Reach pass: search for coverage on the strongest few only. Sweep hits
+    # arrive with their outlets already — no need to search for them again.
     top_n = email_cfg.get("top_n") or DEFAULT_TOP_N[cadence]
+    for item in items:
+        if item.found_via and not item.reach:
+            item.reach = ", ".join(item.found_via[:4])
+    reach_k = email_cfg.get("reach_top_k", top_n)
+    contenders = sorted(
+        (i for i in items if not i.found_via
+         and (i.scores.get("impact") or 0) >= summarize.REACH_MIN_IMPACT),
+        key=lambda i: i.scores.get("impact") or 0,
+        reverse=True,
+    )[:reach_k]
+    for item in contenders:
+        if not budget.allows("reach", costs.ESTIMATE["reach"]):
+            break
+        summarize.assess_reach(client, item, ledger)
+    notes.budget_skipped = budget.skipped
+
+    for item in items:
+        summarize.write_archive(item, archive_dir)
+        state.mark_seen(item.key, item.title, item.published, url=item.url, reported=True)
+
+    # The rule: an email goes out only when there's something new. Not for
+    # "nothing new", and not just for warnings — those ride along with the
+    # next digest (spec, Decisions).
+    if not items:
+        log.info("no new items — no email")
+        if args.dry_run:
+            print("No new items. No email would be sent.")
+            return 0
+        state.record_cost(ledger.to_entry("digest"))
+        state.save()
+        return 0
+
     top, rest = summarize.rank(items, top_n)
+    pending = state.pending_waves(today)
+    waves = [
+        {
+            "title": w["title"],
+            "url": w.get("url"),
+            "outlets": w["outlets"],
+            "first_seen": (state.seen_entry(key) or {}).get("first_seen"),
+        }
+        for key, w in pending
+    ]
+    notes.cost_run = ledger.total
+    notes.cost_month = budget.spent + ledger.total
     subject, body = mailer.render_digest(
-        top, rest, results, str(archive_dir.relative_to(base)), failing, cadence
+        top, rest, results, str(archive_dir.relative_to(base)), failing, cadence,
+        waves=waves, notes=notes,
     )
 
     if args.dry_run:
@@ -241,9 +311,12 @@ def cmd_digest(args) -> int:
         # make the next real run find nothing and send no email — the preview
         # would have eaten the digest it was previewing.
         log.info("dry run — state not saved, these %d item(s) stay new", len(items))
+        log.info("dry run cost: $%.3f  %s", ledger.total, dict(ledger.usd))
         return 0
 
     mailer.send(subject, body, address, app_pw)
+    state.mark_waves_reported([key for key, _ in pending])
+    state.record_cost(ledger.to_entry("digest"))
     state.save()
     return 0
 
@@ -283,14 +356,15 @@ def cmd_pick(args) -> int:
     client = Anthropic(api_key=api_key)
     session = requests.Session()
     session.headers.update({"User-Agent": "research-watcher/0.1"})
+    ledger = costs.Ledger()
 
-    pick, escalation, _why, estimates = pick_mod.score_shortlist(client, items, profile)
+    pick, escalation, _why, estimates = pick_mod.score_shortlist(client, items, profile, ledger)
 
     guide_path = None
     estimate_str = None
     if pick is not None:
         try:
-            guide = pick_mod.generate_guide(client, pick, profile, session)
+            guide = pick_mod.generate_guide(client, pick, profile, session, ledger)
             guide_path = pick_mod.write_guide(pick, guide, profile, guides_dir)
             estimate_str = (
                 f"{guide['est_build_hours']}h build + {guide['est_writeup_hours']}h writeup"
@@ -324,7 +398,35 @@ def cmd_pick(args) -> int:
         return 0
 
     mailer.send(subject, body, address, app_pw)
+    state.record_cost(ledger.to_entry("pick"))
     state.save()
+    return 0
+
+
+def cmd_costs(args) -> int:
+    """Per-run spend from the ledger, month to date, and a 30-day projection."""
+    profile, state, _ = _setup(args)
+    cadence = _cadence(args, profile)
+    cap = float(profile.get("budget", {}).get("monthly_cap_usd", costs.DEFAULT_MONTHLY_CAP))
+    entries = state.costs
+    if not entries:
+        print("No runs recorded yet. The ledger fills in as digest/pick runs save state.")
+        return 0
+
+    print(f"{'DATE':<11} {'CMD':<7} {'TOTAL':>7}  {'SEARCHES':>8}  STAGES")
+    print("-" * 76)
+    for e in entries[-15:]:
+        stages = "  ".join(f"{k} ${v:.2f}" for k, v in e.get("stages", {}).items())
+        print(f"{e['date']:<11} {e['command']:<7} ${e['total']:>6.2f}  {e.get('searches', 0):>8}  "
+              f"{stages}")
+    print("-" * 76)
+    mtd = costs.month_to_date(entries)
+    proj = costs.projection(entries, cadence)
+    n = len([e for e in entries if e.get("command") == "digest"][-5:])
+    print(f"Month to date: ${mtd:.2f} of ${cap:.0f} cap")
+    if proj is not None:
+        print(f"30-day projection ({cadence}, from the last {n} digest run(s) + picks): "
+              f"${proj:.2f}")
     return 0
 
 
@@ -415,6 +517,10 @@ def main(argv=None) -> int:
     w.add_argument("--dry-run", action="store_true", help="print the email instead of sending")
     w.add_argument("--days", type=int, default=7, help="archive window to grade")
     w.set_defaults(func=cmd_pick)
+
+    c = sub.add_parser("costs", help="spend per run, month to date, 30-day projection")
+    c.add_argument("--cadence", choices=CADENCES, help="for the projection")
+    c.set_defaults(func=cmd_costs)
 
     args = p.parse_args(argv)
     return args.func(args)

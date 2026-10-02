@@ -27,8 +27,10 @@ import requests
 from anthropic import Anthropic
 from jinja2 import Environment, PackageLoader, select_autoescape
 
+from . import llm
+from .costs import Ledger
 from .models import Item
-from .summarize import MAX_BODY_CHARS, MODEL
+from .summarize import MAX_BODY_CHARS
 
 log = logging.getLogger(__name__)
 
@@ -165,7 +167,7 @@ useful. "Not reproducible" is not."""
 
 
 def score_shortlist(
-    client: Anthropic, items: list[Item], profile: dict
+    client: Anthropic, items: list[Item], profile: dict, ledger: Ledger | None = None
 ) -> tuple[Item | None, Item | None, str, dict]:
     """Grade feasibility, apply the gate, choose a pick.
 
@@ -190,8 +192,10 @@ def score_shortlist(
             }
         )
 
-    resp = client.messages.create(
-        model=MODEL,
+    resp = llm.create(
+        client,
+        stage="pick-score",
+        ledger=ledger,
         max_tokens=4000,
         system=[
             {
@@ -503,11 +507,14 @@ def generate_guide(
     item: Item,
     profile: dict,
     session: requests.Session,
+    ledger: Ledger | None = None,
 ) -> dict:
     full_text = _fetch_full_text(item, session)
 
-    resp = client.messages.create(
-        model=MODEL,
+    resp = llm.create(
+        client,
+        stage="pick-guide",
+        ledger=ledger,
         max_tokens=16000,
         system=[
             {

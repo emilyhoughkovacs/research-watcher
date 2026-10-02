@@ -103,13 +103,29 @@ def _clean_title(text: str, category: str | None) -> tuple[str, date | None]:
     return text, found_date
 
 
-# Anchor text that is navigation, not a title.
+# Anchor text that is navigation, not a title. Trailing arrows are common
+# ("Read post →" on blog.eleuther.ai) and must not make it look like a title.
 _GENERIC_ANCHOR = re.compile(
-    r"^(read more|read paper|learn more|read the (paper|post)|view|more)$", re.I
+    r"^(read more|read paper|read post|learn more|read the (paper|post)|view|more|details)"
+    r"\s*[→›»>]*$",
+    re.I,
 )
 
 
 # ── fetchers ────────────────────────────────────────────────────────
+
+
+def _base(src: dict, grade_repro: bool) -> dict:
+    """Item fields that come from source config rather than the page."""
+    return {
+        "source_id": src["id"],
+        "source_display": src["display"],
+        "area": src["area"],
+        "section": src["section"],
+        "grade_repro": src.get("grade_repro", grade_repro),
+        "tier": src.get("tier", 2),
+        "aggregator": src.get("aggregator", False),
+    }
 
 
 def fetch_rss(src: dict, defaults: dict, session: requests.Session) -> list[Item]:
@@ -136,11 +152,7 @@ def fetch_rss(src: dict, defaults: dict, session: requests.Session) -> list[Item
         items.append(
             Item(
                 key=f"{src['id']}:{stable}",
-                source_id=src["id"],
-                source_display=src["display"],
-                area=src["area"],
-                section=src["section"],
-                grade_repro=src.get("grade_repro", False),
+                **_base(src, grade_repro=False),
                 title=" ".join((entry.get("title") or "untitled").split()),
                 url=entry.get("link", src["url"]),
                 published=_struct_to_date(
@@ -205,11 +217,7 @@ def fetch_anthropic_team(src: dict, defaults: dict, session: requests.Session) -
     return [
         Item(
             key=f"{src['id']}:{slug}",
-            source_id=src["id"],
-            source_display=src["display"],
-            area=src["area"],
-            section=src["section"],
-            grade_repro=src.get("grade_repro", False),
+            **_base(src, grade_repro=False),
             title=rec["title"],
             url=urljoin("https://www.anthropic.com", f"/research/{slug}"),
             published=rec["date"],
@@ -268,11 +276,7 @@ def fetch_card_index(src: dict, defaults: dict, session: requests.Session) -> li
         items.append(
             Item(
                 key=f"{src['id']}:{stable}",
-                source_id=src["id"],
-                source_display=src["display"],
-                area=src["area"],
-                section=src["section"],
-                grade_repro=src.get("grade_repro", True),
+                **_base(src, grade_repro=True),
                 title=title,
                 url=urljoin(src["url"], a["href"]),
                 published=published,
@@ -286,18 +290,26 @@ def fetch_link_prefix(src: dict, defaults: dict, session: requests.Session) -> l
     """Scrape an index whose posts are all `<a href="/<prefix>/<slug>">`.
 
     Used for sites with no feed and no year in the URL (e.g. safe.ai/blog).
+
+    Options (all default off):
+      nested        accept slugs containing "/" (transluce.org lists its
+                    Docent blog at /docent/blog/<slug> next to /<slug>)
+      require_date  drop anchors with no parseable date — the cheapest way
+                    to tell post cards from nav links when the prefix is "/"
     """
     resp = session.get(src["url"], timeout=defaults.get("timeout_seconds", 20))
     resp.raise_for_status()
     soup = _soup(resp)
     prefix = src.get("link_prefix", "/blog/")
+    nested = src.get("nested", False)
+    require_date = src.get("require_date", False)
 
     items: list[Item] = []
     seen: set[str] = set()
 
     for a in soup.select(f'a[href^="{prefix}"]'):
-        slug = a["href"].removeprefix(prefix).strip("/")
-        if not slug or "/" in slug or slug in seen:
+        slug = a["href"].split("#")[0].removeprefix(prefix).strip("/")
+        if not slug or slug in seen or ("/" in slug and not nested):
             continue
 
         heading = a.find(["h1", "h2", "h3", "h4"])
@@ -305,24 +317,36 @@ def fetch_link_prefix(src: dict, defaults: dict, session: requests.Session) -> l
             (heading or a).get_text(" ", strip=True).split()
         )
         if not title or _GENERIC_ANCHOR.match(title):
-            continue
+            # A "Read post →" link whose title is a sibling heading in the
+            # same card (blog.eleuther.ai). Only trusted when the card has a
+            # single heading — otherwise the "card" is a list container.
+            card = a.find_parent(["article", "li", "div"])
+            headings = card.find_all(["h1", "h2", "h3", "h4"]) if card else []
+            if len(headings) != 1:
+                continue
+            title = " ".join(headings[0].get_text(" ", strip=True).split())
+            if not title:
+                continue
 
+        # The anchor's own text first: when every card shares one parent
+        # container (transluce.org), the parent's first date is the newest
+        # card's, and would be stamped on all of them.
         published = None
-        card = a.find_parent(["article", "li", "div"])
-        if card:
-            dm = _DATE_RE.search(card.get_text(" ", strip=True))
-            if dm:
-                published = parse_date(dm.group(1))
+        dm = _DATE_RE.search(a.get_text(" ", strip=True))
+        if dm is None:
+            card = a.find_parent(["article", "li", "div"])
+            if card:
+                dm = _DATE_RE.search(card.get_text(" ", strip=True))
+        if dm:
+            published = parse_date(dm.group(1))
+        if require_date and published is None:
+            continue
 
         seen.add(slug)
         items.append(
             Item(
                 key=f"{src['id']}:{slug}",
-                source_id=src["id"],
-                source_display=src["display"],
-                area=src["area"],
-                section=src["section"],
-                grade_repro=src.get("grade_repro", False),
+                **_base(src, grade_repro=False),
                 title=title,
                 url=urljoin(src["url"], a["href"]),
                 published=published,
@@ -377,14 +401,3 @@ def fetch_all(sources_path, state: State | None = None) -> list[SourceResult]:
             )
 
     return results
-
-
-def new_items(results: list[SourceResult], state: State) -> list[Item]:
-    """Items not previously seen. Does not mutate state."""
-    return [
-        item
-        for r in results
-        if r.ok
-        for item in r.items
-        if state.is_new(item.key)
-    ]

@@ -2,9 +2,12 @@
 
 Runs only on items `fetch` flagged as new, so a quiet day costs zero tokens.
 
-Two-stage scoring, deliberately split:
-  - HERE (every digest run): `signal` and `artifact_value`. Both are
-    properties of the paper and are cheap to judge while the text is loaded.
+Scoring is split by what each score is for:
+  - HERE (every digest run): `impact`, which ranks the digest, plus
+    `signal` and `artifact_value`, which the pick uses. All are properties
+    of the paper and cheap to judge while the text is loaded.
+  - THE REACH PASS (top candidates only): may revise `impact` using web
+    search for coverage and responses. Costs real money, so it's gated.
   - THE PICK: `feasibility`, which needs deep profile context, plus the
     composite and the repro tier.
 
@@ -25,15 +28,24 @@ import yaml
 from anthropic import Anthropic
 from bs4 import BeautifulSoup
 
+from . import llm
+from .costs import Ledger
+from .dedupe import arxiv_id
 from .models import Item
 
 log = logging.getLogger(__name__)
 
-MODEL = "claude-opus-5"
-
 # Digest summarization is bounded extraction, not open-ended reasoning.
 # Guide generation for the pick runs at "high" — see pick.py.
 SUMMARY_EFFORT = "medium"
+
+# The reach pass reads search results, which is where its cost is (~34k
+# input tokens for 2 searches, measured). Effort only moves thinking.
+REACH_EFFORT = "low"
+REACH_MAX_USES = 2
+# Below this, content alone says it's not a top-N contender (announcements,
+# testimony, org updates) and a search wouldn't change that.
+REACH_MIN_IMPACT = 5
 
 # ~10k tokens of body. Enough for methods + results on a long paper;
 # the pick stage re-reads the winner in full when it writes the guide.
@@ -50,8 +62,18 @@ _SCHEMA = {
             "description": "3-4 bullets: key claim, method, why it matters, "
             "a limitation the authors name. One sentence each.",
         },
+        "abstract": {
+            "type": "string",
+            "description": "3-4 plain sentences: what the work set out to show, "
+            "how it was tested, what was found.",
+        },
         "paper_url": {"type": ["string", "null"]},
         "code_url": {"type": ["string", "null"]},
+        "impact": {
+            "type": "integer",
+            "description": "0-10: how much this will change what the AI safety "
+            "community believes or does",
+        },
         "signal": {
             "type": "integer",
             "description": "0-10: how much this matters for AI safety, "
@@ -107,7 +129,10 @@ _SCHEMA = {
             "additionalProperties": False,
         },
     },
-    "required": ["bullets", "paper_url", "code_url", "signal", "artifact_value", "repro_signals"],
+    "required": [
+        "bullets", "abstract", "paper_url", "code_url",
+        "impact", "signal", "artifact_value", "repro_signals",
+    ],
     "additionalProperties": False,
 }
 
@@ -146,6 +171,14 @@ Open threads (a paper bearing on one of these is worth more):
 
 ## Scoring
 
+`impact` (0-10) — how much will this change what the AI safety community \
+believes or does? This is what ranks the digest. High: a result people \
+will cite, argue with, or build on; a first measurement of something \
+important; a finding that shifts a research agenda or a lab's practice; \
+work likely to draw attention beyond the field. Low: incremental results, \
+announcements, hiring and program posts, testimony, opinion without new \
+evidence. Judge from the content; a separate pass checks coverage.
+
 `signal` (0-10) — does this matter for AI safety, independent of whether \
 it can be reproduced? High: advances a core question, or measures \
 something previously unmeasurable. Low: capability work with a safety \
@@ -173,6 +206,12 @@ paper needs chain-of-thought or refusal behavior, say so — that rules out \
 base models like GPT-2 regardless of anything else. If you cannot tell \
 from the text, prefer the more demanding answer.
 
+## Abstract
+
+3-4 plain sentences for a reader outside the subfield: what the work set \
+out to show, how it was tested, and what was found — with the headline \
+number if there is one. Gloss any term of art. Prose, not a list.
+
 ## Bullets
 
 3-4 bullets, one sentence each: the key claim, the method, why it matters, \
@@ -187,11 +226,23 @@ def fetch_body(item: Item, session: requests.Session, timeout: int = 25) -> None
     cards. Since we fetch the page here anyway, recovering the date costs
     nothing extra.
     """
-    try:
-        resp = session.get(item.url, timeout=timeout)
-        resp.raise_for_status()
-    except Exception as exc:  # noqa: BLE001
-        log.warning("body fetch failed for %s: %s", item.url, exc)
+    # An arXiv abs page is just the abstract; /html/<id> is the full paper.
+    # Not every submission has an HTML rendering, hence the fallback.
+    urls = [item.url]
+    aid = arxiv_id(item.url)
+    if aid:
+        urls = [f"https://arxiv.org/html/{aid}", item.url]
+
+    resp = None
+    for url in urls:
+        try:
+            resp = session.get(url, timeout=timeout)
+            resp.raise_for_status()
+            break
+        except Exception as exc:  # noqa: BLE001
+            log.warning("body fetch failed for %s: %s", url, exc)
+            resp = None
+    if resp is None:
         return
 
     soup = BeautifulSoup(resp.content, "lxml")
@@ -219,7 +270,9 @@ def fetch_body(item: Item, session: requests.Session, timeout: int = 25) -> None
                 item.paper_url = href
 
 
-def summarize_item(client: Anthropic, item: Item, system_prompt: str) -> None:
+def summarize_item(
+    client: Anthropic, item: Item, system_prompt: str, ledger: Ledger | None = None
+) -> None:
     """One API call per item. System prompt is cached across the run."""
     body = item.body or "(no body text could be fetched)"
     user = (
@@ -232,15 +285,17 @@ def summarize_item(client: Anthropic, item: Item, system_prompt: str) -> None:
         f"--- CONTENT ---\n{body}"
     )
 
-    resp = client.messages.create(
-        model=MODEL,
-        max_tokens=2000,
+    resp = llm.create(
+        client,
+        stage="summarize",
+        ledger=ledger,
+        max_tokens=4000,
         system=[
             {
                 "type": "text",
                 "text": system_prompt,
-                # Stable prefix across every item in the run. Opus 5's minimum
-                # cacheable prefix is 512 tokens; this prompt clears it.
+                # Stable prefix across every item in the run. Opus 5.x's
+                # minimum cacheable prefix is 512 tokens; this prompt clears it.
                 "cache_control": {"type": "ephemeral"},
             }
         ],
@@ -253,6 +308,7 @@ def summarize_item(client: Anthropic, item: Item, system_prompt: str) -> None:
     )
 
     if resp.stop_reason == "refusal":
+        # The whole fallback chain declined, not just the primary model.
         log.warning("refused: %s", item.key)
         item.bullets = ["(model declined to summarize this item)"]
         return
@@ -264,6 +320,7 @@ def summarize_item(client: Anthropic, item: Item, system_prompt: str) -> None:
 
     data = json.loads(text)
     item.bullets = data.get("bullets", [])
+    item.abstract = data.get("abstract") or None
     item.paper_url = data.get("paper_url") or item.paper_url
     item.code_url = data.get("code_url") or item.code_url
 
@@ -272,6 +329,7 @@ def summarize_item(client: Anthropic, item: Item, system_prompt: str) -> None:
     # labels reads as a rendering bug.
     if item.paper_url and item.paper_url.rstrip("/") == item.url.rstrip("/"):
         item.paper_url = None
+    item.scores["impact"] = data.get("impact")
     item.scores["signal"] = data.get("signal")
     item.scores["artifact_value"] = data.get("artifact_value")
     item.repro_signals = data.get("repro_signals", {})
@@ -306,6 +364,8 @@ def write_archive(item: Item, archive_dir) -> str:
             if v
         },
         "scores": item.scores,
+        "reach": item.reach,
+        "found_via": item.found_via or None,
         "repro_signals": item.repro_signals,
         "repro_tier": item.repro_tier,
         "picked": item.picked,
@@ -313,12 +373,16 @@ def write_archive(item: Item, archive_dir) -> str:
     }
 
     body = "\n".join(f"- {b}" for b in item.bullets) or "- (no summary generated)"
+    # The pick rehydrates bullets from lines starting "- ", so the summary
+    # stays prose: it must not be mistaken for a bullet.
+    summary = f"## Summary\n\n{item.abstract}\n\n" if item.abstract else ""
     content = (
         "---\n"
         + yaml.safe_dump(front, sort_keys=False, allow_unicode=True)
         + "---\n\n"
         + f"# {item.title}\n\n"
         + f"**{item.source_display}** · {item.published or 'date unknown'}\n\n"
+        + summary
         + "## Key learnings\n\n"
         + body
         + "\n"
@@ -327,16 +391,86 @@ def write_archive(item: Item, archive_dir) -> str:
     return str(path)
 
 
+_REACH_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "impact": {
+            "type": "integer",
+            "description": "0-10, revised in light of what the search found",
+        },
+        "reach": {
+            "type": ["string", "null"],
+            "description": "One line, under 120 characters: who covered or responded "
+            "to it, and when. Null if nothing beyond the original post.",
+        },
+        "outlets": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["impact", "reach", "outlets"],
+    "additionalProperties": False,
+}
+
+
+def assess_reach(client: Anthropic, item: Item, ledger: Ledger | None = None) -> None:
+    """Search-assisted pass: revise `impact` from coverage and responses.
+
+    Only for the top few candidates — each call reads tens of thousands of
+    tokens of search results. Sets `item.reach`; leaves the item untouched
+    if the search fails or is declined.
+    """
+    prelim = item.scores.get("impact")
+    user = (
+        f"Title: {item.title}\n"
+        f"Published by: {item.source_display}, {item.published or 'date unknown'}\n"
+        f"URL: {item.url}\n"
+        f"Summary: {item.abstract or '(none)'}\n"
+        f"Preliminary impact score (from the content alone): {prelim}\n\n"
+        "Search for how this work has been received: news coverage, discussion "
+        "by researchers (Alignment Forum, LessWrong, X, blogs, podcasts), "
+        "responses from labs, replications or follow-on code. Then return a "
+        "revised impact score. Substantive attention can raise it. Little or no "
+        "coverage for something published in the last few days is normal and is "
+        "NOT evidence against it — keep the preliminary score in that case. "
+        "`reach` names outlets and dates, e.g. 'Euronews, ThePrint (Sep 22); "
+        "replication repo on GitHub'. Null if you found nothing beyond the "
+        "original post. Don't count the publisher's own site or social accounts."
+    )
+    try:
+        resp = llm.create(
+            client,
+            stage="reach",
+            ledger=ledger,
+            max_tokens=8000,
+            tools=[llm.web_search(REACH_MAX_USES)],
+            thinking={"type": "adaptive"},
+            output_config={
+                "effort": REACH_EFFORT,
+                "format": {"type": "json_schema", "schema": _REACH_SCHEMA},
+            },
+            messages=[{"role": "user", "content": user}],
+        )
+    except Exception as exc:  # noqa: BLE001 — reach is an enhancement, never fatal
+        log.warning("reach pass failed for %s: %s", item.key, exc)
+        return
+    data = llm.json_output(resp)
+    if data is None:
+        log.warning("reach pass returned nothing for %s", item.key)
+        return
+    item.scores["impact"] = data.get("impact", prelim)
+    item.reach = data.get("reach") or None
+    log.info("%s  reach: impact %s -> %s  %s", item.key, prelim, item.scores["impact"],
+             item.reach or "(no coverage)")
+
+
 def rank(items: list[Item], top_n: int) -> tuple[list[Item], list[Item]]:
     """Split into (expanded, headline-only) by digest score.
 
-    Digest rank uses signal + artifact_value; feasibility belongs to the pick.
+    The digest ranks by `impact` — importance to the safety community —
+    with `signal` as the tiebreak. Reproducibility (`artifact_value`,
+    feasibility) belongs to the pick, which has its own email.
     """
 
-    def score(i: Item) -> float:
-        s = i.scores.get("signal") or 0
-        f = i.scores.get("artifact_value") or 0
-        return (s + f) / 2
+    def score(i: Item) -> tuple:
+        return (i.scores.get("impact") or 0, i.scores.get("signal") or 0)
 
     ordered = sorted(items, key=score, reverse=True)
     return ordered[:top_n], ordered[top_n:]

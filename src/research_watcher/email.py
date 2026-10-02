@@ -10,8 +10,11 @@ from __future__ import annotations
 
 import logging
 import smtplib
+import textwrap
+from dataclasses import dataclass, field
 from email.message import EmailMessage
 
+from .dedupe import arxiv_id
 from .models import Item, SourceResult
 
 log = logging.getLogger(__name__)
@@ -39,7 +42,9 @@ def send(subject: str, body: str, address: str, app_password: str) -> None:
 
 
 def _links(item: Item) -> list[str]:
-    out = [f"   → Blog:  {item.url}"]
+    # Sweep hits and arXiv items link to the paper itself, not a blog post.
+    label = "Paper" if item.source_id == "news-sweep" or arxiv_id(item.url) else "Blog"
+    out = [f"   → {label + ':':<7}{item.url}"]
     if item.paper_url:
         out.append(f"   → Paper: {item.paper_url}")
     if item.code_url:
@@ -47,17 +52,67 @@ def _links(item: Item) -> list[str]:
     return out
 
 
-def _footer(results: list[SourceResult], archive_dir: str, failing: list[tuple[str, int]]) -> str:
+@dataclass
+class DigestNotes:
+    """Everything the footer reports that isn't an item."""
+
+    too_old: int = 0
+    duplicates: int = 0
+    unresolved: list[tuple[str, str]] = field(default_factory=list)  # (title, reason)
+    stale_since: str | None = None
+    cost_run: float | None = None
+    cost_month: float | None = None
+    cap: float | None = None
+    budget_skipped: list[str] = field(default_factory=list)
+
+
+def _footer(
+    results: list[SourceResult],
+    archive_dir: str,
+    failing: list[tuple[str, int]],
+    notes: DigestNotes | None = None,
+) -> str:
+    notes = notes or DigestNotes()
     lines = ["", RULE]
+    if notes.stale_since:
+        lines.append(
+            f"⚠ State was last saved {notes.stale_since}. Earlier runs aren't persisting, "
+            "so items may repeat — check the workflow's commit step."
+        )
     errored = [r for r in results if not r.ok]
     lines.append(f"Archived to {archive_dir}/")
+    skipped = []
+    if notes.too_old:
+        skipped.append(f"{notes.too_old} older item(s) skipped")
+    if notes.duplicates:
+        skipped.append(f"{notes.duplicates} duplicate(s) of earlier items skipped")
+    if skipped:
+        lines.append(" · ".join(skipped))
+    for title, reason in notes.unresolved:
+        lines.append(f"News item skipped, couldn't confirm the paper: {title[:60]} ({reason})")
     if errored:
         detail = ", ".join(f"{r.source_id} ({(r.error or '')[:40]})" for r in errored)
         lines.append(f"{len(errored)} source(s) errored: {detail}")
     if failing:
         for sid, n in failing:
             lines.append(f"⚠ {sid} has failed {n} consecutive runs — check the parser")
+    if notes.cost_run is not None:
+        month = (
+            f" · month to date ${notes.cost_month:.2f} of ${notes.cap:.0f} cap"
+            if notes.cost_month is not None and notes.cap is not None
+            else ""
+        )
+        lines.append(f"Cost: this run ${notes.cost_run:.2f}{month}")
+    if notes.budget_skipped:
+        lines.append(
+            f"Skipped to stay under the monthly cap: {', '.join(notes.budget_skipped)}"
+        )
     return "\n".join(lines)
+
+
+def _wrap(text: str, indent: str = "   ") -> list[str]:
+    return textwrap.wrap(" ".join(text.split()), width=72, initial_indent=indent,
+                         subsequent_indent=indent)
 
 
 # ── digest ──────────────────────────────────────────────────────────
@@ -70,8 +125,15 @@ def render_digest(
     archive_dir: str,
     failing: list[tuple[str, int]],
     cadence: str = "daily",
+    *,
+    waves: list[dict] | None = None,
+    notes: DigestNotes | None = None,
 ) -> tuple[str, str]:
-    """Returns (subject, body)."""
+    """Returns (subject, body).
+
+    `waves` are already-sent items now getting coverage: dicts with title,
+    url, first_seen, outlets.
+    """
     n = len(top) + len(rest)
     areas = sorted({i.area for i in top + rest})
     area_str = ", ".join(a.replace("-", " ").title() for a in areas[:3])
@@ -80,7 +142,7 @@ def render_digest(
     # monthly digest arriving unannounced looks like a backlog.
     label = "" if cadence == "daily" else f"{cadence.capitalize()} · "
     subject = f"[Research Watch] {label}{n} new · {area_str}"
-    if failing:
+    if failing or (notes and notes.stale_since):
         subject = f"⚠ {subject}"
 
     lines: list[str] = []
@@ -89,10 +151,18 @@ def render_digest(
         lines += ["━━ TOP " + str(len(top)) + " " + "━" * 48, ""]
         for idx, item in enumerate(top, 1):
             lines.append(f"{idx}. {item.title}")
-            lines.append(f"   {item.source_display} · {item.published or 'date unknown'}")
+            via = f" · found via {', '.join(item.found_via[:3])}" if item.found_via else ""
+            lines.append(f"   {item.source_display} · {item.published or 'date unknown'}{via}")
             lines += _links(item)
-            for b in item.bullets:
-                lines.append(f"   • {b}")
+            lines.append("")
+            if item.abstract:
+                lines += _wrap(item.abstract)
+            else:
+                # Summary failed or was declined; bullets are the fallback.
+                lines += [f"   • {b}" for b in item.bullets]
+            if item.reach:
+                lines.append("")
+                lines += _wrap(f"Reach: {item.reach}")
             lines.append("")
 
     also = [i for i in rest if i.section != "alignment_blog"]
@@ -114,7 +184,19 @@ def render_digest(
             lines.append(f"  {item.published or '—'} · {item.url}")
         lines.append("")
 
-    lines.append(_footer(results, archive_dir, failing))
+    if waves:
+        lines += ["━━ MAKING WAVES " + "━" * 41, ""]
+        for w in waves:
+            lines.append(f"• {w['title']}")
+            lines.append(
+                f"  First seen {w.get('first_seen') or '—'} · now covered by "
+                f"{', '.join(w['outlets'][:4]) or 'the press'}"
+            )
+            if w.get("url"):
+                lines.append(f"  {w['url']}")
+        lines.append("")
+
+    lines.append(_footer(results, archive_dir, failing, notes))
     return subject, "\n".join(lines)
 
 
