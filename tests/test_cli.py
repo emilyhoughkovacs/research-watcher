@@ -58,3 +58,15 @@ def test_explicit_base_dir_wins_over_env(profile, tmp_path, monkeypatch, capsys)
     monkeypatch.setenv("RESEARCH_WATCH_BASE_DIR", "/somewhere/else")
     cli.main(["--profile", str(profile), "--base-dir", str(tmp_path), "paths"])
     assert capsys.readouterr().out.split()[0] == str(tmp_path / "research/watch")
+
+
+def test_require_returns_plain_value(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    assert cli._require("ANTHROPIC_API_KEY") == "sk-ant-test"
+
+
+def test_require_rejects_unresolved_1password_reference(monkeypatch):
+    # .env holds op:// references; without `op run` they arrive verbatim.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "op://Private/research-watcher/anthropic_key")
+    with pytest.raises(SystemExit, match="op run --env-file"):
+        cli._require("ANTHROPIC_API_KEY")

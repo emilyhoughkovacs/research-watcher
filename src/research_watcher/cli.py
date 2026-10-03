@@ -144,6 +144,15 @@ def _require(name: str) -> str:
             f"  local: add it to your .env\n"
             f"  CI:    gh secret set {name} -R <owner>/<repo>"
         )
+    # A 1Password reference in .env only resolves under `op run`. Read raw,
+    # it would reach Anthropic or Gmail as the credential and fail as a
+    # baffling auth error two steps later.
+    if val.startswith("op://"):
+        sys.exit(
+            f"error: {name} is a 1Password reference ({val}), not a value.\n"
+            "  Run through the 1Password CLI so it resolves:\n"
+            "    op run --env-file=.env -- research-watch <command>"
+        )
     return val
 
 
