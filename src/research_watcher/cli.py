@@ -141,7 +141,7 @@ def _require(name: str) -> str:
     if not val:
         sys.exit(
             f"error: {name} is not set.\n"
-            f"  local: add it to your .env\n"
+            f"  local: store it in a secret manager and reference it from .env\n"
             f"  CI:    gh secret set {name} -R <owner>/<repo>"
         )
     # A 1Password reference in .env only resolves under `op run`. Read raw,

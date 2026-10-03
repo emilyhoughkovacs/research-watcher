@@ -187,33 +187,18 @@ password for delivery.
 
 Not your Google account password. Scoped to mail, revocable on its own.
 
-**Write both to `.env`:**
+**Store them somewhere secure, not in `.env`.** Put both credentials, and
+your Gmail address, in a password manager or secret store. `.env` then holds
+only references to those entries:
 
 ```bash
 cp .env.example .env
-chmod 600 .env
 ```
 
-```
-ANTHROPIC_API_KEY=sk-ant-api03-...
-GMAIL_ADDRESS=you@gmail.com
-GMAIL_APP_PASSWORD=abcdefghijklmnop
-```
-
-`.env` is gitignored.
-
-<details>
-<summary>Optional: pipe from clipboard to keep secrets out of shell history</summary>
-
-```bash
-printf 'ANTHROPIC_API_KEY=%s\n' "$(pbpaste | tr -d '[:space:]')" >> .env
-```
-
-**Type this, don't copy it.** `pbpaste` reads the clipboard. Copying the
-command replaces your key with the command text, which then gets written to
-`.env`.
-
-</details>
+Replace each placeholder with your secret store's reference to that value,
+and run the tool through the store's CLI so the references resolve at
+launch. A plaintext key in a file on disk ends up in backups, sync folders
+and editor history; a reference doesn't.
 
 ## Configure
 
