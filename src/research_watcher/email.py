@@ -1,17 +1,22 @@
-"""SMTP delivery and plain-text email rendering.
+"""SMTP delivery and email rendering.
 
-Plain text on purpose: it renders identically everywhere, is readable on a
-phone lock screen, and can't break in a way that hides content.
+The digest goes out as plain text plus an HTML alternative built from the
+same blocks (see `_Doc`), so the two can't say different things. The HTML
+only adds type: real headings, bold labels, text that reflows to the
+window. The plain text is the fallback, and what the tests read.
+
+Neither is hard-wrapped: a mail client reflows a long line to fit, but it
+can't un-break a line wrapped at 72 characters.
 
 Gmail app password over STARTTLS — no OAuth, so this works headless in CI.
 """
 
 from __future__ import annotations
 
+import html
 import logging
 import re
 import smtplib
-import textwrap
 from dataclasses import dataclass, field
 from email.message import EmailMessage
 
@@ -29,12 +34,16 @@ SMTP_PORT = 587
 RULE = "─" * 62
 
 
-def send(subject: str, body: str, address: str, app_password: str) -> None:
+def send(
+    subject: str, body: str, address: str, app_password: str, html_body: str | None = None
+) -> None:
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = address
     msg["To"] = address
     msg.set_content(body)
+    if html_body:
+        msg.add_alternative(html_body, subtype="html")
 
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as smtp:
         smtp.starttls()
@@ -45,16 +54,98 @@ def send(subject: str, body: str, address: str, app_password: str) -> None:
 
 # ── shared bits ─────────────────────────────────────────────────────
 
+# Inline styles: Gmail drops <style> blocks in some views, never inline ones.
+_FONT = ("font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,"
+         "sans-serif;font-size:14px;line-height:1.5;color:#1f1f1f")
+_STYLE = {
+    "section": "font-size:22px;font-weight:700;margin:28px 0 12px;padding-bottom:6px;"
+               "border-bottom:2px solid #1f1f1f",
+    "title": "font-size:19px;font-weight:700;margin:22px 0 2px",
+    "label": "font-size:16px;font-weight:700;margin:16px 0 4px",
+    "item": "font-weight:600;margin:12px 0 0",
+    "meta": "color:#666;margin:0",
+    "p": "margin:0 0 8px",
+    "ul": "margin:0 0 8px;padding-left:22px",
+    "li": "margin:0 0 6px",
+    "foot": "color:#777;font-size:12px;margin:0",
+}
+_URL = re.compile(r"https?://[^\s<>\"]+")
 
-def _links(item: Item) -> list[str]:
+
+def _inline(text: str) -> str:
+    """Escape, then turn bare URLs into links."""
+    return _URL.sub(lambda m: f'<a href="{m.group(0)}">{m.group(0)}</a>', html.escape(text))
+
+
+class _Doc:
+    """One email built block by block, rendered as plain text and as HTML.
+
+    Every block appends to both, so the HTML can only differ from the plain
+    text in typography, never in content.
+    """
+
+    def __init__(self) -> None:
+        self.text: list[str] = []
+        self._html: list[str] = []
+        self._bullets: list[str] = []
+
+    def _add(self, text: str | None, html_part: str | None) -> None:
+        if self._bullets:
+            items = "".join(f'<li style="{_STYLE["li"]}">{b}</li>' for b in self._bullets)
+            self._html.append(f'<ul style="{_STYLE["ul"]}">{items}</ul>')
+            self._bullets = []
+        if text is not None:
+            self.text.append(text)
+        if html_part is not None:
+            self._html.append(html_part)
+
+    def section(self, name: str) -> None:
+        bar = f"━━ {name} "
+        self._add(bar + "━" * (57 - len(bar)), f'<h2 style="{_STYLE["section"]}">'
+                  f"{html.escape(name.title())}</h2>")
+        self.blank()
+
+    def heading(self, text: str, style: str = "title") -> None:
+        """A card title ("title") or a block label like "Risk level" ("label")."""
+        tag = "h3" if style == "title" else "h4"
+        self._add(text, f'<{tag} style="{_STYLE[style]}">{html.escape(text)}</{tag}>')
+
+    def line(self, text: str, style: str = "meta", indent: str = "") -> None:
+        self._add(indent + text, f'<div style="{_STYLE[style]}">{_inline(text)}</div>')
+
+    def para(self, text: str, indent: str = "") -> None:
+        text = " ".join(text.split())
+        self._add(indent + text, f'<p style="{_STYLE["p"]}">{_inline(text)}</p>')
+
+    def bullet(self, text: str, indent: str = "") -> None:
+        text = " ".join(text.split())
+        self._add(f"{indent}• {text}", None)
+        self._bullets.append(_inline(text))
+
+    def blank(self) -> None:
+        self.text.append("")
+
+    def rule(self) -> None:
+        self._add(RULE, '<hr style="border:0;border-top:1px solid #ddd;margin:24px 0 10px">')
+
+    def render(self) -> tuple[str, str]:
+        self._add(None, None)  # close a trailing list
+        body = "".join(self._html)
+        return "\n".join(self.text), (
+            f'<!doctype html><html><head><meta charset="utf-8"></head>'
+            f'<body style="margin:0;padding:16px">'
+            f'<div style="{_FONT};max-width:720px">{body}</div></body></html>'
+        )
+
+
+def _links(item: Item, doc: _Doc) -> None:
     # Sweep hits and arXiv items link to the paper itself, not a blog post.
     label = "Paper" if item.source_id == "news-sweep" or arxiv_id(item.url) else "Blog"
-    out = [f"   → {label + ':':<7}{item.url}"]
+    doc.line(f"→ {label + ':':<7}{item.url}", indent="   ")
     if item.paper_url:
-        out.append(f"   → Paper: {item.paper_url}")
+        doc.line(f"→ Paper: {item.paper_url}", indent="   ")
     if item.code_url:
-        out.append(f"   → Code:  {item.code_url}")
-    return out
+        doc.line(f"→ Code:  {item.code_url}", indent="   ")
 
 
 @dataclass
@@ -72,13 +163,14 @@ class DigestNotes:
 
 
 def _footer(
+    doc: _Doc,
     results: list[SourceResult],
     archive_dir: str,
     failing: list[tuple[str, int]],
     notes: DigestNotes | None = None,
-) -> str:
+) -> None:
     notes = notes or DigestNotes()
-    lines = ["", RULE]
+    lines: list[str] = []
     if notes.stale_since:
         lines.append(
             f"⚠ State was last saved {notes.stale_since}. Earlier runs aren't persisting, "
@@ -112,35 +204,36 @@ def _footer(
         lines.append(
             f"Skipped to stay under the monthly cap: {', '.join(notes.budget_skipped)}"
         )
-    return "\n".join(lines)
+    doc.blank()
+    doc.rule()
+    for line in lines:
+        doc.line(line, style="foot")
 
 
-def _wrap(text: str, indent: str = "   ", hang: str | None = None) -> list[str]:
-    return textwrap.wrap(" ".join(text.split()), width=72, initial_indent=indent,
-                         subsequent_indent=hang if hang is not None else indent)
-
-
-def _cards_section(cards: list[Item]) -> list[str]:
-    lines = ["━━ SYSTEM CARDS " + "━" * 41, ""]
-    for idx, card in enumerate(cards, 1):
-        lines.append(f"{idx}. {card.title}")
-        lines.append(f"   {card.source_display} · {card.when or 'date unknown'}")
-        lines.append(f"   → Card:  {card.url}")
-        lines.append("")
-        if card.abstract:
-            lines += _wrap(card.abstract)
-            lines.append("")
-        if card.card.get("risk_level"):
-            lines += _wrap(f"Risk level: {card.card['risk_level']}")
-            lines.append("")
-        for finding in card.bullets:
-            lines += _wrap(finding, indent="   • ", hang="     ")
+def _cards_section(cards: list[Item], doc: _Doc) -> None:
+    doc.section("SYSTEM CARDS")
+    for card in cards:
+        doc.heading(card.title)
+        doc.line(f"{card.source_display} · {card.when or 'date unknown'}")
+        doc.line(f"→ Card:  {card.url}")
+        doc.blank()
+        for label, text in (
+            ("Summary", card.abstract),
+            ("Risk level", card.card.get("risk_level")),
+        ):
+            if text:
+                doc.heading(label, style="label")
+                doc.para(text)
+                doc.blank()
         if card.bullets:
-            lines.append("")
+            doc.heading("Notable evaluations", style="label")
+            for finding in card.bullets:
+                doc.bullet(finding)
+            doc.blank()
         if card.card.get("changes"):
-            lines += _wrap(f"What changed: {card.card['changes']}")
-            lines.append("")
-    return lines
+            doc.heading("What changed", style="label")
+            doc.para(card.card["changes"])
+            doc.blank()
 
 
 # ── digest ──────────────────────────────────────────────────────────
@@ -157,8 +250,8 @@ def render_digest(
     waves: list[dict] | None = None,
     notes: DigestNotes | None = None,
     cards: list[Item] | None = None,
-) -> tuple[str, str]:
-    """Returns (subject, body).
+) -> tuple[str, str, str]:
+    """Returns (subject, plain-text body, HTML body).
 
     `waves` are already-sent items now getting coverage: dicts with title,
     url, first_seen, outlets. `cards` are new system cards, shown above
@@ -185,28 +278,30 @@ def render_digest(
     if failing or (notes and notes.stale_since):
         subject = f"⚠ {subject}"
 
-    lines: list[str] = []
+    doc = _Doc()
 
     if cards:
-        lines += _cards_section(cards)
+        _cards_section(cards, doc)
 
     if top:
-        lines += ["━━ TOP " + str(len(top)) + " " + "━" * 48, ""]
+        doc.section(f"TOP {len(top)}")
         for idx, item in enumerate(top, 1):
-            lines.append(f"{idx}. {item.title}")
+            doc.line(f"{idx}. {item.title}", style="item")
             via = f" · found via {', '.join(item.found_via[:3])}" if item.found_via else ""
-            lines.append(f"   {item.source_display} · {item.published or 'date unknown'}{via}")
-            lines += _links(item)
-            lines.append("")
+            doc.line(f"{item.source_display} · {item.published or 'date unknown'}{via}",
+                     indent="   ")
+            _links(item, doc)
+            doc.blank()
             if item.abstract:
-                lines += _wrap(item.abstract)
+                doc.para(item.abstract, indent="   ")
             else:
                 # Summary failed or was declined; bullets are the fallback.
-                lines += [f"   • {b}" for b in item.bullets]
+                for b in item.bullets:
+                    doc.bullet(b, indent="   ")
             if item.reach:
-                lines.append("")
-                lines += _wrap(f"Reach: {item.reach}")
-            lines.append("")
+                doc.blank()
+                doc.para(f"Reach: {item.reach}", indent="   ")
+            doc.blank()
 
     also = [i for i in rest if i.section != "alignment_blog"]
     blog = [i for i in top + rest if i.section == "alignment_blog"]
@@ -214,33 +309,35 @@ def render_digest(
     blog = [i for i in blog if i not in top]
 
     if also:
-        lines += ["━━ ALSO NEW " + "━" * 45, ""]
+        doc.section("ALSO NEW")
         for item in also:
-            lines.append(f"• {item.title}")
-            lines.append(f"  {item.source_display}, {item.published or '—'} · {item.url}")
-        lines.append("")
+            doc.line(f"• {item.title}", style="item")
+            doc.line(f"{item.source_display}, {item.published or '—'} · {item.url}", indent="  ")
+        doc.blank()
 
     if blog:
-        lines += ["━━ ALIGNMENT SCIENCE BLOG " + "━" * 31, ""]
+        doc.section("ALIGNMENT SCIENCE BLOG")
         for item in blog:
-            lines.append(f"• {item.title}")
-            lines.append(f"  {item.published or '—'} · {item.url}")
-        lines.append("")
+            doc.line(f"• {item.title}", style="item")
+            doc.line(f"{item.published or '—'} · {item.url}", indent="  ")
+        doc.blank()
 
     if waves:
-        lines += ["━━ MAKING WAVES " + "━" * 41, ""]
+        doc.section("MAKING WAVES")
         for w in waves:
-            lines.append(f"• {w['title']}")
-            lines.append(
-                f"  First seen {w.get('first_seen') or '—'} · now covered by "
-                f"{', '.join(w['outlets'][:4]) or 'the press'}"
+            doc.line(f"• {w['title']}", style="item")
+            doc.line(
+                f"First seen {w.get('first_seen') or '—'} · now covered by "
+                f"{', '.join(w['outlets'][:4]) or 'the press'}",
+                indent="  ",
             )
             if w.get("url"):
-                lines.append(f"  {w['url']}")
-        lines.append("")
+                doc.line(w["url"], indent="  ")
+        doc.blank()
 
-    lines.append(_footer(results, archive_dir, failing, notes))
-    return subject, "\n".join(lines)
+    _footer(doc, results, archive_dir, failing, notes)
+    body, html_body = doc.render()
+    return subject, body, html_body
 
 
 # ── repro pick ─────────────────────────────────────────────────────

@@ -57,7 +57,8 @@ def env(tmp_path, monkeypatch):
     # Every run in a test happens on the same date; a real same-day re-run
     # would (correctly) skip the sweep as not due.
     monkeypatch.setattr(sweep_mod, "window", lambda *a: 3)
-    monkeypatch.setattr(mailer, "send", lambda subject, body, *a: sent.append((subject, body)))
+    monkeypatch.setattr(mailer, "send",
+                        lambda subject, body, *a: sent.append((subject, body, *a[2:])))
 
     def run(*items, dry_run=False):
         feed["results"] = results_for(*items)
@@ -123,7 +124,7 @@ def test_stale_state_alarm_and_floor(env):
                     today() - timedelta(days=20))
     new = make_item("cais", "new", "A post from today that is actually new", today())
     env.run(old, new)
-    [(subject, body)] = env.sent
+    [(subject, body, _)] = env.sent
     assert subject.startswith("⚠")
     assert "State was last saved" in body
     assert "actually new" in body and "weeks ago" not in body
@@ -132,7 +133,7 @@ def test_stale_state_alarm_and_floor(env):
 
 def test_top_item_shows_summary_not_bullets(env):
     env.run(make_item("redwood", "a", "A genuinely new post about monitoring", today()))
-    [(_, body)] = env.sent
+    [(_, body, _)] = env.sent
     assert "set out to show, how, and what it found" in " ".join(body.split())  # wrapped
     assert "   • " not in body
 
@@ -166,9 +167,13 @@ def test_dry_run_saves_nothing(env):
 
 def test_card_alone_sends_email_in_its_own_section(env):
     env.run(make_card("anthropic-system-cards", "opus", "Claude Opus 9 system card", today()))
-    [(subject, body)] = env.sent
+    [(subject, body, html)] = env.sent
     assert subject == "[Research Watch] System card: Claude Opus 9"
-    assert "SYSTEM CARDS" in body and "Risk level: ASL-3" in body
+    assert "SYSTEM CARDS" in body and "Risk level\nASL-3" in body
+    # Typography only: the HTML carries real headings for the same blocks.
+    assert '<h3 style="' in html and ">Claude Opus 9 system card</h3>" in html
+    labels = ("Summary", "Risk level", "Notable evaluations")
+    assert all(f">{label}</h4>" in html for label in labels)
     assert "TOP " not in body  # not ranked as research
 
 
@@ -176,7 +181,7 @@ def test_cards_sit_above_research_and_are_never_ranked(env):
     research = [make_item("metr", f"r{i}", f"Research item number {i} about evals", today())
                 for i in range(4)]
     env.run(*research, make_card("openai-system-cards", "gpt", "GPT-9 system card", today()))
-    [(subject, body)] = env.sent
+    [(subject, body, _)] = env.sent
     assert subject.startswith("[Research Watch] System card: GPT-9 · 4 new")
     assert body.index("SYSTEM CARDS") < body.index("TOP 3")
     top = body[body.index("TOP 3"):body.index("ALSO NEW")]
@@ -188,7 +193,7 @@ def test_month_dated_card_survives_the_daily_floor(env):
     card = make_card("anthropic-system-cards", "m", "Claude Month system card",
                      today() - timedelta(days=20), date_label="September 2026")
     env.run(card)
-    [(_, body)] = env.sent
+    [(_, body, _)] = env.sent
     assert "September 2026" in body
     assert (today() - timedelta(days=20)).isoformat() not in body
 
@@ -214,7 +219,7 @@ def test_backfill_emails_newest_per_lab_and_archives_the_rest(env):
                       today() - timedelta(days=90))
     env.backfill(a_new, a_tie, a_old, o_old, o_new)
 
-    [(subject, body)] = env.sent
+    [(subject, body, _)] = env.sent
     assert "Claude Two" in subject and "GPT-Two" in subject
     assert "Claude Tie" not in body and "GPT-One" not in body
 
@@ -240,3 +245,12 @@ def test_backfill_dry_run_writes_nothing(env, capsys):
     assert env.sent == [] and not env.state_path.exists()
     assert not (env.base / "out" / "digest").exists()
     assert "SYSTEM CARDS" in capsys.readouterr().out
+
+
+def test_paragraphs_are_not_hard_wrapped(env):
+    item = make_item("redwood", "a", "A genuinely new post about monitoring", today())
+    env.run(item)
+    [(_, body, html)] = env.sent
+    line = next(ln for ln in body.splitlines() if "set out to show" in ln)
+    assert "what it found" in line  # one line, left for the client to reflow
+    assert "<p " in html and "set out to show" in html

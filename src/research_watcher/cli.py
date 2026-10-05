@@ -344,7 +344,7 @@ def cmd_digest(args) -> int:
     pending, waves = _waves(state, today)
     notes.cost_run = ledger.total
     notes.cost_month = budget.spent + ledger.total
-    subject, body = mailer.render_digest(
+    subject, body, html_body = mailer.render_digest(
         top, rest, results, str(archive_dir.relative_to(base)), failing, cadence,
         waves=waves, notes=notes, cards=cards,
     )
@@ -358,7 +358,7 @@ def cmd_digest(args) -> int:
         log.info("dry run cost: $%.3f  %s", ledger.total, dict(ledger.usd))
         return 0
 
-    mailer.send(subject, body, address, app_pw)
+    mailer.send(subject, body, address, app_pw, html_body)
     state.mark_waves_reported([key for key, _ in pending])
     state.record_cost(ledger.to_entry("digest"))
     state.save()
@@ -450,7 +450,7 @@ def cmd_cards_backfill(args) -> int:
     notes = mailer.DigestNotes(cap=cap)
     notes.cost_run = ledger.total
     notes.cost_month = costs.month_to_date(state.costs, today) + ledger.total
-    subject, body = mailer.render_digest(
+    subject, body, html_body = mailer.render_digest(
         [], [], results, str(archive_dir.relative_to(base)), state.failing_sources(), cadence,
         waves=waves, notes=notes, cards=newest,
     )
@@ -469,7 +469,7 @@ def cmd_cards_backfill(args) -> int:
         summarize.write_card_archive(card, archive_dir)
         state.mark_seen(card.key, card.title, card.published, url=card.url, reported=True)
 
-    mailer.send(subject, body, address, app_pw)
+    mailer.send(subject, body, address, app_pw, html_body)
     state.mark_waves_reported([key for key, _ in pending])
     state.record_cost(ledger.to_entry("cards-backfill"))
     state.save()

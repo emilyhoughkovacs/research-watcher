@@ -433,7 +433,7 @@ dedupe.py      what counts as new: seen keys, content fingerprints, date floor.
 sweep.py       news sweep, and resolving each hit to the paper itself.
 summarize.py   per-item summary + scoring, and the reach pass.
 pick.py        pick scoring and guide generation. Optional.
-email.py       plain-text rendering, SMTP over STARTTLS.
+email.py       plain text + HTML rendering from one block list, SMTP over STARTTLS.
 llm.py         every Claude call: model, refusal fallback, cost accounting.
 costs.py       prices, per-run ledger, the monthly cap.
 ```
