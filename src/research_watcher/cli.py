@@ -5,6 +5,9 @@
                             No LLM, no email, no cost. Run this ONCE first.
   research-watch digest     summarize new items, archive, send the digest.
                             No new items, no email.
+  research-watch cards-backfill
+                            start tracking system cards: email the newest
+                            per lab, archive the rest metadata-only. Once.
   research-watch pick       grade the window, pick one, write the guide, send.
   research-watch costs      what runs have cost, month to date, projection.
   research-watch paths      the profile's output paths, one per line (CI
@@ -13,7 +16,7 @@
 Defaults for --sources, --profile, --base-dir and --env can come from
 RESEARCH_WATCH_SOURCES, RESEARCH_WATCH_PROFILE, RESEARCH_WATCH_BASE_DIR and
 RESEARCH_WATCH_ENV, so read-only commands work from any directory. Commands
-that write state (digest, pick, baseline) ignore RESEARCH_WATCH_BASE_DIR
+that write state (digest, pick, baseline, cards-backfill) ignore RESEARCH_WATCH_BASE_DIR
 unless --dry-run: when CI owns the state, a local write diverges from it.
 
 `digest` runs at whatever cadence you schedule it — daily, weekly, or
@@ -34,7 +37,7 @@ import argparse
 import logging
 import os
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import requests
@@ -46,6 +49,7 @@ from . import email as mailer
 from . import pick as pick_mod
 from . import sweep as sweep_mod
 from .fetch import fetch_all
+from .models import SYSTEM_CARDS, Item
 from .state import State
 
 log = logging.getLogger("research_watcher")
@@ -73,7 +77,7 @@ DEFAULT_STATE = "out/state.json"
 
 # Commands that write state. With the data repo's state owned by CI, a
 # local write makes a second history that collides with CI's next commit.
-WRITES_STATE = {"digest", "daily", "pick", "weekly", "baseline"}
+WRITES_STATE = {"digest", "daily", "pick", "weekly", "baseline", "cards-backfill"}
 
 
 def _base_dir(args) -> Path:
@@ -273,7 +277,10 @@ def cmd_digest(args) -> int:
     system_prompt = summarize.build_system_prompt(profile)
     summarized = []
     for item in items:
-        summarize.fetch_body(item, session)
+        summarize.fetch_body(
+            item, session,
+            max_chars=summarize.CARD_BODY_CHARS if item.is_card else summarize.MAX_BODY_CHARS,
+        )
         # Some indexes carry no dates (alignment.anthropic.com, safe.ai);
         # fetch_body backfills one from the page, so the floor gets a
         # second look before any tokens are spent.
@@ -283,21 +290,27 @@ def cmd_digest(args) -> int:
             state.mark_seen(item.key, item.title, item.published, url=item.url)
             continue
         try:
-            summarize.summarize_item(client, item, system_prompt, ledger)
+            if item.is_card:
+                summarize.summarize_card(client, item, ledger)
+            else:
+                summarize.summarize_item(client, item, system_prompt, ledger)
         except Exception as exc:  # noqa: BLE001
             log.warning("summarize failed for %s: %s", item.key, exc)
         summarized.append(item)
     items = summarized
+    # Cards get their own section and are never ranked against research.
+    cards = [i for i in items if i.is_card]
+    research = [i for i in items if not i.is_card]
 
     # Reach pass: search for coverage on the strongest few only. Sweep hits
     # arrive with their outlets already — no need to search for them again.
     top_n = email_cfg.get("top_n") or DEFAULT_TOP_N[cadence]
-    for item in items:
+    for item in research:
         if item.found_via and not item.reach:
             item.reach = ", ".join(item.found_via[:4])
     reach_k = email_cfg.get("reach_top_k", top_n)
     contenders = sorted(
-        (i for i in items if not i.found_via
+        (i for i in research if not i.found_via
          and (i.scores.get("impact") or 0) >= summarize.REACH_MIN_IMPACT),
         key=lambda i: i.scores.get("impact") or 0,
         reverse=True,
@@ -308,8 +321,11 @@ def cmd_digest(args) -> int:
         summarize.assess_reach(client, item, ledger)
     notes.budget_skipped = budget.skipped
 
-    for item in items:
+    for item in research:
         summarize.write_archive(item, archive_dir)
+        state.mark_seen(item.key, item.title, item.published, url=item.url, reported=True)
+    for item in cards:
+        summarize.write_card_archive(item, archive_dir)
         state.mark_seen(item.key, item.title, item.published, url=item.url, reported=True)
 
     # The rule: an email goes out only when there's something new. Not for
@@ -324,22 +340,13 @@ def cmd_digest(args) -> int:
         state.save()
         return 0
 
-    top, rest = summarize.rank(items, top_n)
-    pending = state.pending_waves(today)
-    waves = [
-        {
-            "title": w["title"],
-            "url": w.get("url"),
-            "outlets": w["outlets"],
-            "first_seen": (state.seen_entry(key) or {}).get("first_seen"),
-        }
-        for key, w in pending
-    ]
+    top, rest = summarize.rank(research, top_n)
+    pending, waves = _waves(state, today)
     notes.cost_run = ledger.total
     notes.cost_month = budget.spent + ledger.total
     subject, body = mailer.render_digest(
         top, rest, results, str(archive_dir.relative_to(base)), failing, cadence,
-        waves=waves, notes=notes,
+        waves=waves, notes=notes, cards=cards,
     )
 
     if args.dry_run:
@@ -355,6 +362,118 @@ def cmd_digest(args) -> int:
     state.mark_waves_reported([key for key, _ in pending])
     state.record_cost(ledger.to_entry("digest"))
     state.save()
+    return 0
+
+
+def _waves(state: State, today) -> tuple[list[tuple[str, dict]], list[dict]]:
+    """Pending Making-waves entries, and the same shaped for the email."""
+    pending = state.pending_waves(today)
+    waves = [
+        {
+            "title": w["title"],
+            "url": w.get("url"),
+            "outlets": w["outlets"],
+            "first_seen": (state.seen_entry(key) or {}).get("first_seen"),
+        }
+        for key, w in pending
+    ]
+    return pending, waves
+
+
+def cmd_cards_backfill(args) -> int:
+    """Start tracking system cards without emailing the whole back catalog.
+
+    Run once, when the system_cards sources are first enabled — before a
+    digest sees them, or the sanity cap stops that digest (~90 cards).
+
+    Per lab: the newest card is summarized and emailed, as it would be on
+    a day that lab had just published it; every other card is archived
+    metadata-only and marked seen, so no digest ever picks it up. Pending
+    Making-waves items ride along, as in any digest. A lab with any card
+    already seen is skipped — the digest handles it from then on.
+    """
+    profile, state, base = _setup(args)
+    cadence = _cadence(args, profile)
+    api_key = _require("ANTHROPIC_API_KEY")
+    address = _require("GMAIL_ADDRESS")
+    app_pw = _require("GMAIL_APP_PASSWORD")
+
+    archive_dir = base / profile.get("output", {}).get("archive_dir", DEFAULT_ARCHIVE)
+    today = datetime.now(UTC).date()
+    ledger = costs.Ledger()
+    cap = float(profile.get("budget", {}).get("monthly_cap_usd", costs.DEFAULT_MONTHLY_CAP))
+
+    results = fetch_all(args.sources, state=state, section=SYSTEM_CARDS)
+    if not results:
+        sys.exit(f"error: no enabled sources with section: {SYSTEM_CARDS} in {args.sources}")
+    for r in results:
+        state.record_source(r.source_id, r.ok, r.error)
+
+    newest: list[Item] = []
+    back: list[Item] = []
+    for r in results:
+        if not r.ok:
+            log.warning("%s failed, not backfilled: %s", r.source_id, r.error)
+            continue
+        if state.seen_count(r.source_id):
+            log.info("%s: already tracked, skipping", r.source_id)
+            continue
+        if not r.items:
+            continue
+        # Newest first by date; page order (the lab's own newest-first)
+        # breaks ties, which month-only dates make common.
+        ordered = [
+            item for _, item in sorted(
+                enumerate(r.items),
+                key=lambda p: (p[1].published or date.min, -p[0]),
+                reverse=True,
+            )
+        ]
+        newest.append(ordered[0])
+        back += ordered[1:]
+
+    if not newest:
+        print("Nothing to backfill: every system card source is already tracked or failed.")
+        return 0
+
+    client = Anthropic(api_key=api_key)
+    session = requests.Session()
+    session.headers.update({"User-Agent": "research-watcher/0.1"})
+    for card in newest:
+        summarize.fetch_body(card, session, max_chars=summarize.CARD_BODY_CHARS)
+        try:
+            summarize.summarize_card(client, card, ledger)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("summarize failed for %s: %s", card.key, exc)
+
+    pending, waves = _waves(state, today)
+    notes = mailer.DigestNotes(cap=cap)
+    notes.cost_run = ledger.total
+    notes.cost_month = costs.month_to_date(state.costs, today) + ledger.total
+    subject, body = mailer.render_digest(
+        [], [], results, str(archive_dir.relative_to(base)), state.failing_sources(), cadence,
+        waves=waves, notes=notes, cards=newest,
+    )
+
+    if args.dry_run:
+        print(f"SUBJECT: {subject}\n\n{body}")
+        log.info("dry run — nothing archived, state not saved (%d card(s) would be "
+                 "archived metadata-only)", len(back))
+        log.info("dry run cost: $%.3f  %s", ledger.total, dict(ledger.usd))
+        return 0
+
+    for card in back:
+        summarize.write_card_archive(card, archive_dir, backfill=True)
+        state.mark_seen(card.key, card.title, card.published, url=card.url)
+    for card in newest:
+        summarize.write_card_archive(card, archive_dir)
+        state.mark_seen(card.key, card.title, card.published, url=card.url, reported=True)
+
+    mailer.send(subject, body, address, app_pw)
+    state.mark_waves_reported([key for key, _ in pending])
+    state.record_cost(ledger.to_entry("cards-backfill"))
+    state.save()
+    print(f"Emailed {len(newest)} system card(s); archived {len(back)} more metadata-only.")
     return 0
 
 
@@ -504,6 +623,8 @@ def _load_window(archive_dir: Path, days: int):
             continue
         _, front, rest = text.split("---", 2)
         meta = yaml.safe_load(front) or {}
+        if meta.get("type") == "system_card":
+            continue  # nothing to reproduce
         try:
             file_date = date.fromisoformat(path.name[:10])
         except ValueError:
@@ -567,6 +688,13 @@ def main(argv=None) -> int:
     sub.add_parser(
         "baseline", help="mark everything currently published as seen; no cost"
     ).set_defaults(func=cmd_baseline)
+
+    b = sub.add_parser(
+        "cards-backfill",
+        help="start tracking system cards: email the newest per lab, archive the rest",
+    )
+    b.add_argument("--dry-run", action="store_true", help="print the email; write nothing")
+    b.set_defaults(func=cmd_cards_backfill)
 
     # `daily` and `weekly` are the pre-cadence command names, kept as aliases
     # so existing schedules and muscle memory keep working.

@@ -3,9 +3,11 @@
 # Committed and shareable — this list is half the value of the tool.
 # All sources verified to PARSE (not just respond) on 2026-10-02.
 #
-# kind: rss | anthropic_team | card_index | link_prefix
+# kind: rss | anthropic_team | card_index | link_prefix | model_card_table
+#       | openai_safety_hub
 # tier: 1 = frontier labs, 2 = broader safety orgs (disable to cut volume)
-# section: which email section items land in (top / also / alignment_blog)
+# section: which email section items land in (top / also / alignment_blog
+#   / system_cards)
 # aggregator: true for sites that mostly crosspost others' work (Alignment
 #   Forum). When the same research arrives from an aggregator and from its
 #   original publisher, the original wins.
@@ -22,6 +24,50 @@ defaults:
   user_agent: "research-watcher/0.1 (+https://github.com/emilyhoughkovacs/research-watcher)"
 
 sources:
+  # ── System cards ────────────────────────────────────────────────────
+  # Own section, above research; every new card is shown, never ranked.
+  # None of the research sources list these, and the news sweep excludes
+  # product launches. First time a source here is enabled, run
+  # `research-watch cards-backfill`: the back catalog is archived
+  # metadata-only, and only the newest card per lab gets emailed.
+
+  - id: anthropic-system-cards
+    kind: model_card_table
+    tier: 1
+    enabled: true
+    url: https://www.anthropic.com/system-cards
+    display: "Anthropic"
+    title_suffix: " system card"
+    area: system-cards
+    section: system_cards
+    grade_repro: false
+    # Dated to the month only. Card links redirect to PDFs of 15+ MB.
+
+  - id: openai-system-cards
+    kind: openai_safety_hub
+    tier: 1
+    enabled: true
+    url: https://deploymentsafety.openai.com/
+    display: "OpenAI"
+    area: system-cards
+    section: system_cards
+    grade_repro: false
+    # openai.com/system-cards returns 403 to scripts; this hub doesn't.
+    # Addenda and updates are separate entries, each its own card.
+
+  - id: deepmind-model-cards
+    kind: model_card_table
+    tier: 1
+    enabled: true
+    url: https://deepmind.google/models/model-cards/
+    display: "Google DeepMind"
+    title_suffix: " model card"
+    area: system-cards
+    section: system_cards
+    grade_repro: false
+    # Includes Gemma cards (ai.google.dev). Dates read "Updated <date>":
+    # an updated card keeps its URL, so it isn't re-sent.
+
   # ── Tier 1: Frontier labs — Anthropic research teams ────────────────────────────────
   # Team pages are server-rendered; every item on a team page belongs to
   # that team, so `area` comes from config rather than being parsed.

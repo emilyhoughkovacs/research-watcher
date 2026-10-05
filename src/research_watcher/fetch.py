@@ -11,6 +11,7 @@ Design rules:
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from datetime import date, datetime
@@ -33,11 +34,14 @@ SUSPICIOUS_ZERO_THRESHOLD = 3
 # ── config ──────────────────────────────────────────────────────────
 
 
-def load_sources(path) -> tuple[dict, list[dict]]:
+def load_sources(path, section: str | None = None) -> tuple[dict, list[dict]]:
     with open(Path(path).expanduser()) as f:
         cfg = yaml.safe_load(f)
     defaults = cfg.get("defaults", {}) or {}
-    sources = [s for s in cfg.get("sources", []) if s.get("enabled", True)]
+    sources = [
+        s for s in cfg.get("sources", [])
+        if s.get("enabled", True) and (section is None or s.get("section") == section)
+    ]
     return defaults, sources
 
 
@@ -75,6 +79,30 @@ def parse_date(raw: str | None) -> date | None:
         except ValueError:
             pass
     return None
+
+
+_MONTH_YEAR_RE = re.compile(r"^([A-Z][a-z]{2,8})\.?\s+(\d{4})$")
+
+
+def parse_month(raw: str | None) -> tuple[date | None, str | None]:
+    """A day-precise date, or a month-only one as (the 1st, "September 2026").
+
+    The label is what gets printed for a month-only date, so a card
+    listed as "September 2026" never shows up as "2026-09-01".
+    """
+    d = parse_date(raw)
+    if d is not None or not raw:
+        return d, None
+    m = _MONTH_YEAR_RE.match(" ".join(raw.split()))
+    if not m:
+        return None, None
+    for fmt in ("%B %Y", "%b %Y"):
+        try:
+            d = datetime.strptime(f"{m.group(1)} {m.group(2)}", fmt).date()
+            return d, d.strftime("%B %Y")
+        except ValueError:
+            continue
+    return None, None
 
 
 def _struct_to_date(st) -> date | None:
@@ -356,20 +384,137 @@ def fetch_link_prefix(src: dict, defaults: dict, session: requests.Session) -> l
     return items
 
 
+def _card_key(src: dict, url: str) -> str:
+    # The link, not the title: a card's title is the model name, and an
+    # addendum for the same model is a separate card at a separate URL.
+    p = urlparse(url)
+    stable = f"{p.netloc.removeprefix('www.')}{p.path}".rstrip("/")
+    return f"{src['id']}:{stable}"
+
+
+_DATE_PREFIX = re.compile(r"^(updated|published)\s+", re.I)
+
+
+def fetch_model_card_table(src: dict, defaults: dict, session: requests.Session) -> list[Item]:
+    """Scrape a system/model card index laid out as table rows.
+
+    anthropic.com/system-cards and deepmind.google/models/model-cards share
+    a shape: one <tr> per card holding the model name, a date cell, and a
+    link to the card. Anthropic dates to the month ("September 2026"),
+    DeepMind to the day ("Updated 24 September 2026").
+
+    Rows come back in page order, which is the lab's own newest-first
+    ordering — the tiebreak when two cards share a month.
+
+    Options:
+      title_suffix  appended to the model name ("Claude Opus 5.5" →
+                    "Claude Opus 5.5 system card")
+    """
+    resp = session.get(src["url"], timeout=defaults.get("timeout_seconds", 20))
+    resp.raise_for_status()
+    soup = _soup(resp)
+    suffix = src.get("title_suffix", "")
+
+    items: list[Item] = []
+    seen: set[str] = set()
+    for row in soup.find_all("tr"):
+        a = row.find("a", href=True)
+        cells = row.find_all(["th", "td"])
+        if a is None or len(cells) < 2:
+            continue  # header row
+        url = urljoin(src["url"], a["href"]).split("#")[0]
+        key = _card_key(src, url)
+        if key in seen:
+            continue
+        name = " ".join(cells[0].get_text(" ", strip=True).split())
+        if not name:
+            continue
+        published, label = None, None
+        for cell in cells[1:]:
+            raw = _DATE_PREFIX.sub("", " ".join(cell.get_text(" ", strip=True).split()))
+            published, label = parse_month(raw)
+            if published:
+                break
+        seen.add(key)
+        items.append(
+            Item(
+                key=key,
+                **_base(src, grade_repro=False),
+                title=f"{name}{suffix}",
+                url=url,
+                published=published,
+                date_label=label,
+            )
+        )
+    return items
+
+
+def _astro(value):
+    """Decode Astro's island-prop serialization: [0, value] or [1, array]."""
+    if isinstance(value, list) and len(value) == 2 and isinstance(value[0], int):
+        kind, inner = value
+        if kind == 1:
+            return [_astro(v) for v in inner]
+        if kind == 0 and isinstance(inner, dict):
+            return {k: _astro(v) for k, v in inner.items()}
+        return inner
+    return value
+
+
+def fetch_openai_safety_hub(src: dict, defaults: dict, session: requests.Session) -> list[Item]:
+    """Scrape deploymentsafety.openai.com, OpenAI's system card index.
+
+    Only the first few cards render as links; the full list is the props
+    of the `UpdatesList` Astro island, as JSON. openai.com/system-cards
+    would be simpler but answers scripts with 403.
+    """
+    resp = session.get(src["url"], timeout=defaults.get("timeout_seconds", 20))
+    resp.raise_for_status()
+    soup = _soup(resp)
+    island = soup.find("astro-island", attrs={"component-export": "UpdatesList"})
+    if island is None or not island.get("props"):
+        raise ValueError("no UpdatesList island — the page layout changed")
+    # The props object itself is plain JSON; its values are encoded.
+    entries = _astro(json.loads(island["props"]).get("items")) or []
+
+    items: list[Item] = []
+    for e in entries:
+        if not isinstance(e, dict) or not e.get("href") or not e.get("title"):
+            continue
+        if e.get("published") is False or e.get("archived"):
+            continue
+        url = urljoin(src["url"], e["href"])
+        items.append(
+            Item(
+                key=_card_key(src, url),
+                **_base(src, grade_repro=False),
+                title=" ".join(e["title"].split()),
+                url=url,
+                published=parse_date(e.get("date")),
+                body=e.get("excerpt") or None,
+            )
+        )
+    return items
+
+
 FETCHERS = {
     "rss": fetch_rss,
     "anthropic_team": fetch_anthropic_team,
     "card_index": fetch_card_index,
     "link_prefix": fetch_link_prefix,
+    "model_card_table": fetch_model_card_table,
+    "openai_safety_hub": fetch_openai_safety_hub,
 }
 
 
 # ── orchestration ───────────────────────────────────────────────────
 
 
-def fetch_all(sources_path, state: State | None = None) -> list[SourceResult]:
-    """Fetch every enabled source. Failures are captured, never raised."""
-    defaults, sources = load_sources(sources_path)
+def fetch_all(
+    sources_path, state: State | None = None, section: str | None = None
+) -> list[SourceResult]:
+    """Fetch every enabled source (or one section's). Failures are captured, never raised."""
+    defaults, sources = load_sources(sources_path, section)
     session = _session(defaults)
     results: list[SourceResult] = []
 

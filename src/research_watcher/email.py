@@ -9,6 +9,7 @@ Gmail app password over STARTTLS — no OAuth, so this works headless in CI.
 from __future__ import annotations
 
 import logging
+import re
 import smtplib
 import textwrap
 from dataclasses import dataclass, field
@@ -18,6 +19,10 @@ from .dedupe import arxiv_id
 from .models import Item, SourceResult
 
 log = logging.getLogger(__name__)
+
+# "Gemini 3.8 Audio (Live, Live Extended Thinking, Flash TTS, ...)" — a
+# variant list belongs in the body, not the subject line.
+_PARENS = re.compile(r"\s*\([^)]*\)")
 
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 587
@@ -110,9 +115,32 @@ def _footer(
     return "\n".join(lines)
 
 
-def _wrap(text: str, indent: str = "   ") -> list[str]:
+def _wrap(text: str, indent: str = "   ", hang: str | None = None) -> list[str]:
     return textwrap.wrap(" ".join(text.split()), width=72, initial_indent=indent,
-                         subsequent_indent=indent)
+                         subsequent_indent=hang if hang is not None else indent)
+
+
+def _cards_section(cards: list[Item]) -> list[str]:
+    lines = ["━━ SYSTEM CARDS " + "━" * 41, ""]
+    for idx, card in enumerate(cards, 1):
+        lines.append(f"{idx}. {card.title}")
+        lines.append(f"   {card.source_display} · {card.when or 'date unknown'}")
+        lines.append(f"   → Card:  {card.url}")
+        lines.append("")
+        if card.abstract:
+            lines += _wrap(card.abstract)
+            lines.append("")
+        if card.card.get("risk_level"):
+            lines += _wrap(f"Risk level: {card.card['risk_level']}")
+            lines.append("")
+        for finding in card.bullets:
+            lines += _wrap(finding, indent="   • ", hang="     ")
+        if card.bullets:
+            lines.append("")
+        if card.card.get("changes"):
+            lines += _wrap(f"What changed: {card.card['changes']}")
+            lines.append("")
+    return lines
 
 
 # ── digest ──────────────────────────────────────────────────────────
@@ -128,12 +156,15 @@ def render_digest(
     *,
     waves: list[dict] | None = None,
     notes: DigestNotes | None = None,
+    cards: list[Item] | None = None,
 ) -> tuple[str, str]:
     """Returns (subject, body).
 
     `waves` are already-sent items now getting coverage: dicts with title,
-    url, first_seen, outlets.
+    url, first_seen, outlets. `cards` are new system cards, shown above
+    the research in their own section and never ranked against it.
     """
+    cards = cards or []
     n = len(top) + len(rest)
     areas = sorted({i.area for i in top + rest})
     area_str = ", ".join(a.replace("-", " ").title() for a in areas[:3])
@@ -141,11 +172,23 @@ def render_digest(
     # every day is easier to filter on. Anything rarer says so, because a
     # monthly digest arriving unannounced looks like a backlog.
     label = "" if cadence == "daily" else f"{cadence.capitalize()} · "
-    subject = f"[Research Watch] {label}{n} new · {area_str}"
+    parts = []
+    if cards:
+        # Model names, not a count: which model shipped is the news.
+        models = ", ".join(
+            _PARENS.sub("", c.card.get("model") or c.title) for c in cards
+        )
+        parts.append(f"System card{'s' if len(cards) > 1 else ''}: {models}")
+    if n:
+        parts.append(f"{n} new · {area_str}")
+    subject = f"[Research Watch] {label}{' · '.join(parts)}"
     if failing or (notes and notes.stale_since):
         subject = f"⚠ {subject}"
 
     lines: list[str] = []
+
+    if cards:
+        lines += _cards_section(cards)
 
     if top:
         lines += ["━━ TOP " + str(len(top)) + " " + "━" * 48, ""]

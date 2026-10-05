@@ -32,6 +32,11 @@ from .state import State
 # day or two after posting.
 DATE_FLOOR_DAYS = {"daily": 4, "weekly": 10, "monthly": 35}
 
+# Anthropic dates system cards to the month, which reads as the 1st: a card
+# listed on the 28th would look 27 days old. Cards get a window wide enough
+# for that; the seen keys still catch any card already reported.
+SYSTEM_CARD_FLOOR_DAYS = 35
+
 # Titles shorter than this aren't distinctive enough to merge two items on
 # title alone ("Introduction", "Request for proposals").
 MIN_TITLE_WORDS = 4
@@ -85,6 +90,8 @@ def item_fingerprints(item: Item) -> set[str]:
 
 
 def too_old(item: Item, today: date, floor_days: int) -> bool:
+    if item.is_card:
+        floor_days = max(floor_days, SYSTEM_CARD_FLOOR_DAYS)
     return item.published is not None and item.published < today - timedelta(days=floor_days)
 
 

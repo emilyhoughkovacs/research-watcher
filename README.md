@@ -6,7 +6,7 @@ Alignment work is scattered across lab blogs, personal sites, and forums,
 and most of it has no RSS feed. Keeping current means remembering to check
 a dozen places. This checks them for you.
 
-Each run polls 15 sources, compares what it finds against what it has
+Each run polls 15 research sources, compares what it finds against what it has
 already reported, and summarizes only the genuinely new items with Claude.
 A news sweep also catches research from outside those sources that's
 getting press, traced back to the paper itself and never summarized from
@@ -17,6 +17,11 @@ each. You get one email. On a day with nothing new, you get nothing.
 
 Runs daily by default; weekly and monthly are one config line away. Cadence
 changes how much a single run picks up, not how it works.
+
+New model system cards from Anthropic, OpenAI and Google DeepMind get
+their own section at the top of the email: the lab's risk determination,
+the findings that matter for safety, and what changed from the last card.
+See [System cards](#system-cards).
 
 Every summarized paper is also written to disk as markdown with YAML front
 matter, so the digest doubles as a searchable archive.
@@ -75,6 +80,29 @@ redwoodresearch.org instead.
 is a SPA catch-all route, the second is Webflow ignoring a Squarespace
 convention. Neither site has RSS. Verify a new source *parses*, not that it
 responds.
+
+### System cards
+
+| Source | Method |
+|---|---|
+| Anthropic system cards (`anthropic.com/system-cards`) | scrape; cards are PDFs |
+| OpenAI Deployment Safety Hub (`deploymentsafety.openai.com`) | scrape |
+| Google DeepMind model cards (`deepmind.google/models/model-cards`) | scrape |
+
+None of the research sources list system cards, and the news sweep skips
+product launches, so these are polled directly. A new card, including an
+addendum, triggers an email on its own and lands in a **SYSTEM CARDS**
+section above the research. It's never ranked against papers or considered
+for the repro pick. Each card is summarized with its own prompt: the lab's
+risk level in its own framework's terms (ASL, Preparedness Framework, CCLs)
+with tiers glossed, 3-5 findings with numbers, and what changed from the
+previous card. Summaries read the first ~120k characters, ~$0.10-0.15 a card.
+
+**Turning them on:** run `research-watch cards-backfill` once (try it with
+`--dry-run` first). It emails the newest card from each lab and archives the
+other ~90 metadata-only, so the back catalog is recorded but never sent.
+Without it, the next digest would see every card as new and stop at the
+sanity cap.
 
 ## Output
 
@@ -291,6 +319,7 @@ commit. To write there deliberately, pass `--base-dir` explicitly.
 |---|---|---|
 | `check` | free | Parse all sources, print a table |
 | `baseline` | free | Mark current items as seen |
+| `cards-backfill` | ~$0.35 once | Start tracking system cards: email the newest per lab, archive the rest |
 | `digest` | $0.20-0.75/run | Sweep, summarize new items, archive, send if anything is new |
 | `pick` | ~$0.50 | Pick one paper, write repro guide, send |
 | `costs` | free | Spend per run, month to date, 30-day projection |

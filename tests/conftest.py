@@ -4,7 +4,7 @@ from datetime import date
 
 import pytest
 
-from research_watcher.models import Item, SourceResult
+from research_watcher.models import SYSTEM_CARDS, Item, SourceResult
 
 
 def make_item(
@@ -28,6 +28,24 @@ def make_item(
         published=published,
         tier=tier,
         aggregator=aggregator,
+    )
+
+
+def make_card(
+    source_id: str, slug: str, title: str, published: date | None = None,
+    date_label: str | None = None,
+) -> Item:
+    return Item(
+        key=f"{source_id}:{slug}",
+        source_id=source_id,
+        source_display=source_id,
+        area="system-cards",
+        section=SYSTEM_CARDS,
+        grade_repro=False,
+        title=title,
+        url=f"https://{source_id}.example/{slug}",
+        published=published,
+        date_label=date_label,
     )
 
 

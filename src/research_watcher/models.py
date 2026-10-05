@@ -5,6 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 
+# Model system cards: their own email section, their own summary prompt,
+# never ranked against research and never picked for reproduction.
+SYSTEM_CARDS = "system_cards"
+
 
 @dataclass
 class Item:
@@ -22,11 +26,15 @@ class Item:
     source_id: str
     source_display: str
     area: str
-    section: str  # top | also | alignment_blog
+    section: str  # top | also | alignment_blog | system_cards
     grade_repro: bool
     title: str
     url: str
     published: date | None = None
+    # Shown instead of `published` when the source only gives a month
+    # ("September 2026"): `published` is then the 1st, which is right for
+    # sorting and the date floor but wrong to print as a day.
+    date_label: str | None = None
     # Which copy wins when the same work arrives from two sources in one
     # run: originals beat aggregators (AF crossposts), then lower tier.
     tier: int = 2
@@ -41,8 +49,10 @@ class Item:
     reach: str | None = None  # one line on coverage, from the search pass
     found_via: list[str] = field(default_factory=list)  # outlets, sweep items only
     repro_signals: dict = field(default_factory=dict)
+    # System cards only: model, risk_level, changes (see summarize_card)
+    card: dict = field(default_factory=dict)
 
-    # ── grading (pick) ────────────────────────────────────────────
+    # ── grading (pick)────────────────────────────────────────────
     scores: dict = field(default_factory=lambda: {
         "impact": None,  # digest rank: importance to the safety community
         "signal": None,
@@ -52,6 +62,15 @@ class Item:
     })
     repro_tier: str | None = None  # GREEN | YELLOW | RED
     picked: bool = False
+
+    @property
+    def is_card(self) -> bool:
+        return self.section == SYSTEM_CARDS
+
+    @property
+    def when(self) -> str:
+        """The date as it should be printed."""
+        return self.date_label or (self.published.isoformat() if self.published else "")
 
     @property
     def slug(self) -> str:

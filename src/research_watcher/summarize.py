@@ -51,6 +51,10 @@ REACH_MIN_IMPACT = 5
 # the pick stage re-reads the winner in full when it writes the guide.
 MAX_BODY_CHARS = 40_000
 
+# System cards run 100-300 pages and open with a long table of contents;
+# 40k characters ends before the findings start. ~30k tokens, ~$0.12.
+CARD_BODY_CHARS = 120_000
+
 _DATE_RE = re.compile(r"([A-Z][a-z]{2,8}\s+\d{1,2},\s+\d{4})")
 
 _SCHEMA = {
@@ -219,12 +223,34 @@ and a limitation the authors themselves name. Write for someone deciding \
 in ten seconds whether to open the paper. No preamble, no hedging."""
 
 
-def fetch_body(item: Item, session: requests.Session, timeout: int = 25) -> None:
+def _pdf_text(content: bytes, max_chars: int) -> str:
+    """Text of a PDF's leading pages, stopping once max_chars is reached."""
+    from io import BytesIO
+
+    from pypdf import PdfReader
+
+    out: list[str] = []
+    n = 0
+    for page in PdfReader(BytesIO(content)).pages:
+        text = " ".join((page.extract_text() or "").split())
+        out.append(text)
+        n += len(text) + 1
+        if n >= max_chars:
+            break
+    return " ".join(out)[:max_chars]
+
+
+def fetch_body(
+    item: Item, session: requests.Session, timeout: int = 25, max_chars: int = MAX_BODY_CHARS
+) -> None:
     """Fetch the item's page. Backfills `published` when the index had no date.
 
     Some indexes (alignment.anthropic.com, safe.ai) carry no date on their
     cards. Since we fetch the page here anyway, recovering the date costs
     nothing extra.
+
+    PDFs are read as text (Anthropic's system card links redirect to one);
+    parsed as HTML they'd come out as compressed-stream noise.
     """
     # An arXiv abs page is just the abstract; /html/<id> is the full paper.
     # Not every submission has an HTML rendering, hence the fallback.
@@ -245,11 +271,18 @@ def fetch_body(item: Item, session: requests.Session, timeout: int = 25) -> None
     if resp is None:
         return
 
+    if "pdf" in resp.headers.get("content-type", "") or resp.content[:5] == b"%PDF-":
+        try:
+            item.body = _pdf_text(resp.content, max_chars) or None
+        except Exception as exc:  # noqa: BLE001
+            log.warning("PDF text extraction failed for %s: %s", item.url, exc)
+        return
+
     soup = BeautifulSoup(resp.content, "lxml")
     for tag in soup(["script", "style", "nav", "footer", "header"]):
         tag.decompose()
     text = soup.get_text(" ", strip=True)
-    item.body = text[:MAX_BODY_CHARS]
+    item.body = text[:max_chars]
 
     if item.published is None:
         m = _DATE_RE.search(text[:4000])
@@ -342,6 +375,181 @@ def summarize_item(
         getattr(usage, "cache_read_input_tokens", 0) or 0,
         usage.output_tokens,
     )
+
+
+# ── system cards ────────────────────────────────────────────────────
+# A card isn't a paper: there's no method to reproduce and no "impact" to
+# rank against research. What a reader wants is which model, what the lab
+# concluded about its risk, and what the evals turned up.
+
+_CARD_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "model": {
+            "type": "string",
+            "description": "Short model name for an email subject, under 30 characters: "
+            "the family name without a list of variants, e.g. 'Claude Opus 5.5', "
+            "'GPT-6.1 Sol', 'Gemini 3.8 Audio'",
+        },
+        "abstract": {
+            "type": "string",
+            "description": "3-4 plain sentences: what the model is, how it was evaluated, "
+            "and the headline safety conclusion.",
+        },
+        "risk_level": {
+            "type": ["string", "null"],
+            "description": "The lab's own risk or safeguards determination, in its own "
+            "terms, one line. Null if the card states none.",
+        },
+        "findings": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "3-5 notable findings, one sentence each, with the number "
+            "where there is one.",
+        },
+        "changes": {
+            "type": ["string", "null"],
+            "description": "One sentence: what changed from the previous model or card "
+            "in this family. Null if the card doesn't say.",
+        },
+    },
+    "required": ["model", "abstract", "risk_level", "findings", "changes"],
+    "additionalProperties": False,
+}
+
+CARD_SYSTEM_PROMPT = """You are summarizing a frontier AI model's system card \
+(or model card) for an AI safety researcher who wants to know what each new \
+release means for safety without reading 200 pages.
+
+## Risk level
+
+State the lab's own determination in its own framework's terms: Anthropic's \
+AI Safety Levels (ASL-3, ASL-4) under its Responsible Scaling Policy; OpenAI's \
+Preparedness Framework categories and levels ("High capability in \
+biological and chemical"); Google DeepMind's Frontier Safety Framework \
+Critical Capability Levels (CCLs) and alert thresholds. Name the domain \
+when the level is domain-specific. Quote the determination; don't infer \
+one the card doesn't make. Null if the card states none.
+
+## Terms
+
+Labs rename their frameworks and tiers often. Keep the card's own terms, \
+but gloss each acronym or tier name the first time it appears anywhere in \
+your output, briefly: "CB-1 (the lower of two chemical/biological \
+tiers)", not a bare "CB-1".
+
+## Findings
+
+3-5 findings a safety researcher would most want to know, one sentence \
+each, with the headline number where there is one. Prefer, in order: \
+dangerous-capability evaluations (CBRN, cyber, autonomy and AI R&D, \
+self-exfiltration), alignment and misbehavior findings (deception, reward \
+hacking, sabotage, sandbagging, evaluation awareness, scheming), \
+interpretability results, model welfare, and new safeguards. Skip \
+capability benchmarks unless they bear on risk. Concrete over general: \
+"solved 3 of 10 expert-level cyber ranges, up from 1" beats "showed \
+improved cyber capabilities".
+
+## Abstract
+
+3-4 plain sentences: what the model is, how it was evaluated (internal, \
+external testers, government institutes), and the headline safety \
+conclusion. Prose, not a list. No preamble, no hedging.
+
+## What changed
+
+One sentence on what's new relative to the previous model or card in the \
+family, if the card says. An addendum or update is mostly about this."""
+
+
+def summarize_card(client: Anthropic, item: Item, ledger: Ledger | None = None) -> None:
+    """One call per card. Fills abstract, bullets (the findings) and `card`."""
+    body = item.body or "(no text could be fetched)"
+    user = (
+        f"Title: {item.title}\n"
+        f"Lab: {item.source_display}\n"
+        f"URL: {item.url}\n"
+        f"Published: {item.when or 'unknown'}\n\n"
+        f"--- CARD TEXT (leading pages) ---\n{body}"
+    )
+    resp = llm.create(
+        client,
+        stage="summarize",
+        ledger=ledger,
+        max_tokens=4000,
+        system=CARD_SYSTEM_PROMPT,
+        thinking={"type": "adaptive"},
+        output_config={
+            "effort": SUMMARY_EFFORT,
+            "format": {"type": "json_schema", "schema": _CARD_SCHEMA},
+        },
+        messages=[{"role": "user", "content": user}],
+    )
+    data = llm.json_output(resp)
+    if data is None:
+        log.warning("no card summary for %s (stop_reason=%s)", item.key, resp.stop_reason)
+        item.bullets = ["(model declined to summarize this card)"]
+        return
+    item.abstract = data.get("abstract") or None
+    item.bullets = data.get("findings") or []
+    item.card = {
+        "model": data.get("model") or None,
+        "risk_level": data.get("risk_level") or None,
+        "changes": data.get("changes") or None,
+    }
+    log.info("%s  in=%d out=%d", item.key, resp.usage.input_tokens, resp.usage.output_tokens)
+
+
+def write_card_archive(item: Item, archive_dir, backfill: bool = False) -> str:
+    """Write a system card's archive file. Returns the path.
+
+    `backfill` cards were already published when tracking began: metadata
+    only, no summary. They exist so the archive is complete and so nothing
+    treats them as new later.
+    """
+    from pathlib import Path
+
+    archive_dir = Path(archive_dir)
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    path = archive_dir / item.archive_name
+
+    front = {
+        "type": "system_card",  # the pick skips these
+        "title": item.title,
+        "source": item.source_id,
+        "source_display": item.source_display,
+        "published": item.published.isoformat() if item.published else None,
+    }
+    if item.date_label:
+        front["published_label"] = item.date_label
+    front["links"] = {"card": item.url}
+    if backfill:
+        front["backfill"] = True
+    else:
+        front.update({k: item.card.get(k) for k in ("model", "risk_level", "changes")})
+    front["key"] = item.key
+
+    parts = [f"# {item.title}\n", f"**{item.source_display}** · {item.when or 'date unknown'}\n"]
+    if backfill:
+        parts.append("Archived when system card tracking began; not summarized.\n")
+    else:
+        if item.abstract:
+            parts.append(f"## Summary\n\n{item.abstract}\n")
+        if item.card.get("risk_level"):
+            parts.append(f"## Risk level\n\n{item.card['risk_level']}\n")
+        findings = "\n".join(f"- {b}" for b in item.bullets) or "- (no summary generated)"
+        parts.append(f"## Findings\n\n{findings}\n")
+        if item.card.get("changes"):
+            parts.append(f"## What changed\n\n{item.card['changes']}\n")
+
+    content = (
+        "---\n"
+        + yaml.safe_dump(front, sort_keys=False, allow_unicode=True)
+        + "---\n\n"
+        + "\n".join(parts)
+    )
+    path.write_text(content, encoding="utf-8")
+    return str(path)
 
 
 def write_archive(item: Item, archive_dir) -> str:
